@@ -1,7 +1,11 @@
 use super::{Ctx, ExecError, RawOutput};
 use crate::parse::SimpleCommand;
 
-pub(crate) fn run(cmd: &SimpleCommand, _ctx: &Ctx) -> Result<RawOutput, ExecError> {
+pub(crate) fn run(
+    cmd: &SimpleCommand,
+    _ctx: &Ctx,
+    _quota: &std::sync::Arc<crate::sink::DiskQuota>,
+) -> Result<RawOutput, ExecError> {
     let mut text = String::new();
     for (idx, arg) in cmd.argv[1..].iter().enumerate() {
         if idx > 0 {
@@ -25,12 +29,12 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
 
-    fn make_ctx<'a>(
-        resolver: &'a Resolver,
-        sensibles: &'a [regex::Regex],
-        secrets: &'a [String],
+    fn make_ctx(
+        resolver: Resolver,
+        sensibles: Vec<regex::Regex>,
+        secrets: Vec<String>,
         max_write_bytes: usize,
-    ) -> Ctx<'a> {
+    ) -> Ctx {
         Ctx {
             resolver,
             sensibles,
@@ -44,7 +48,12 @@ mod tests {
 
     fn run_cmd(dir: &tempfile::TempDir, cmd: &str) -> Result<ExecOutcome, ExecError> {
         let resolver = Resolver::new(dir.path()).unwrap();
-        let ctx = make_ctx(&resolver, &[], &[], crate::sink::DEFAULT_MAX_WRITE_BYTES);
+        let ctx = make_ctx(
+            resolver,
+            vec![],
+            vec![],
+            crate::sink::DEFAULT_MAX_WRITE_BYTES,
+        );
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
     }
@@ -121,9 +130,9 @@ mod tests {
         let resolver = Resolver::new(dir.path()).unwrap();
         let sensibles = vec![regex::Regex::new(r".*\.env$").unwrap()];
         let ctx = make_ctx(
-            &resolver,
-            &sensibles,
-            &[],
+            resolver,
+            sensibles,
+            vec![],
             crate::sink::DEFAULT_MAX_WRITE_BYTES,
         );
         let node = parse_input(r#"echo "KEY=1" > .env"#, &HashMap::new()).unwrap();
@@ -136,7 +145,7 @@ mod tests {
     fn echo_redirect_enforces_write_bound() {
         let dir = tempfile::tempdir().unwrap();
         let resolver = Resolver::new(dir.path()).unwrap();
-        let ctx = make_ctx(&resolver, &[], &[], 3);
+        let ctx = make_ctx(resolver, vec![], vec![], 3);
         let node = parse_input("echo too-long > out.txt", &HashMap::new()).unwrap();
         let err = execute(&node, &ctx).unwrap_err();
         assert!(matches!(err, ExecError::Denied(m) if m.contains("write bound")));
@@ -148,9 +157,9 @@ mod tests {
         let resolver = Resolver::new(dir.path()).unwrap();
         let secrets = vec!["tok-abc123".to_string()];
         let ctx = make_ctx(
-            &resolver,
-            &[],
-            &secrets,
+            resolver,
+            vec![],
+            secrets,
             crate::sink::DEFAULT_MAX_WRITE_BYTES,
         );
         let node = parse_input(r#"echo "token=tok-abc123" > out.txt"#, &HashMap::new()).unwrap();
@@ -166,9 +175,9 @@ mod tests {
         let resolver = Resolver::new(dir.path()).unwrap();
         let secrets = vec!["tok-abc123".to_string()];
         let ctx = make_ctx(
-            &resolver,
-            &[],
-            &secrets,
+            resolver,
+            vec![],
+            secrets,
             crate::sink::DEFAULT_MAX_WRITE_BYTES,
         );
         let node = parse_input("echo tok-abc123", &HashMap::new()).unwrap();

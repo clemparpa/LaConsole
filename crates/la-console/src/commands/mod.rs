@@ -7,13 +7,17 @@ pub mod sub;
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::parse::{expand_globs, Arg, Node, Redirect, SimpleCommand};
 use crate::resolve::Resolver;
-use crate::sink::{sensitive_match, CallerSink, FileSink, PipeSink, Sink, SinkError};
+use crate::sink::{sensitive_match, CallerSink, DiskQuota, FileSink, PipeSink, Sink, SinkError};
 
 pub const DEFAULT_MAX_READ_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MAX_LS_ENTRIES: usize = 10_000;
+pub const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 30;
+pub const DEFAULT_MAX_COMMAND_WRITE_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Limits {
@@ -28,6 +32,8 @@ pub struct Limits {
     pub max_http_response_bytes: usize,
     pub max_http_redirects: usize,
     pub http_timeout_secs: u64,
+    pub command_timeout_secs: u64,
+    pub max_command_write_bytes: u64,
 }
 
 impl Default for Limits {
@@ -44,14 +50,17 @@ impl Default for Limits {
             max_http_response_bytes: http::DEFAULT_MAX_HTTP_RESPONSE_BYTES,
             max_http_redirects: http::MAX_REDIRECTS,
             http_timeout_secs: http::DEFAULT_HTTP_TIMEOUT_SECS,
+            command_timeout_secs: DEFAULT_COMMAND_TIMEOUT_SECS,
+            max_command_write_bytes: DEFAULT_MAX_COMMAND_WRITE_BYTES,
         }
     }
 }
 
-pub struct Ctx<'a> {
-    pub resolver: &'a Resolver,
-    pub sensibles: &'a [regex::Regex],
-    pub secrets: &'a [String],
+#[derive(Clone)]
+pub struct Ctx {
+    pub resolver: Resolver,
+    pub sensibles: Vec<regex::Regex>,
+    pub secrets: Vec<String>,
     pub limits: Limits,
 }
 
@@ -122,16 +131,7 @@ fn exec_simple(
     ctx: &Ctx,
     final_output: bool,
 ) -> Result<SimpleResult, ExecError> {
-    let name = cmd.argv[0].text.as_str();
-    let raw = match name {
-        "cat" => cat::run(cmd, ctx)?,
-        "echo" => echo::run(cmd, ctx)?,
-        "grep" => grep::run(cmd, ctx)?,
-        "http" => http::run(cmd, ctx)?,
-        "ls" => ls::run(cmd, ctx)?,
-        "sub" => sub::run(cmd, ctx)?,
-        _ => return Err(ExecError::Denied(format!("unknown command: {name}"))),
-    };
+    let quota = Arc::new(DiskQuota::new(ctx.limits.max_command_write_bytes));
 
     let mut out_file: Option<FileSink> = None;
     let mut err_file: Option<FileSink> = None;
@@ -140,18 +140,20 @@ fn exec_simple(
     for redir in &cmd.redirects {
         match redir {
             Redirect::Out { path, append } => {
-                out_file = Some(new_file_sink(ctx, path, *append)?);
+                out_file = Some(new_file_sink(ctx, path, *append, quota.clone())?);
             }
             Redirect::All { path, append } => {
-                out_file = Some(new_file_sink(ctx, path, *append)?);
+                out_file = Some(new_file_sink(ctx, path, *append, quota.clone())?);
                 all_to_out = true;
             }
             Redirect::Err { path } => {
-                err_file = Some(new_file_sink(ctx, path, false)?);
+                err_file = Some(new_file_sink(ctx, path, false, quota.clone())?);
             }
             Redirect::ErrToOut => err_to_out = true,
         }
     }
+
+    let raw = run_with_timeout(cmd, ctx, quota)?;
 
     let mut truncated = false;
     let mut pipe_data = Vec::new();
@@ -172,7 +174,7 @@ fn exec_simple(
             raw.stdout.clone()
         };
         if final_output {
-            let mut sink = CallerSink::new(ctx.limits.max_output_bytes, ctx.secrets);
+            let mut sink = CallerSink::new(ctx.limits.max_output_bytes, &ctx.secrets);
             sink.write(&bytes).map_err(sink_to_exec)?;
             let (text, was_truncated) = sink.finish();
             out_string = text;
@@ -189,7 +191,7 @@ fn exec_simple(
         if let Some(sink) = err_file.as_mut() {
             sink.write(&raw.stderr).map_err(sink_to_exec)?;
         } else {
-            let mut sink = CallerSink::new(ctx.limits.max_output_bytes, ctx.secrets);
+            let mut sink = CallerSink::new(ctx.limits.max_output_bytes, &ctx.secrets);
             sink.write(&raw.stderr).map_err(sink_to_exec)?;
             let (text, was_truncated) = sink.finish();
             err_string = text;
@@ -215,14 +217,64 @@ fn exec_simple(
     })
 }
 
-fn new_file_sink(ctx: &Ctx, path: &str, append: bool) -> Result<FileSink, ExecError> {
+fn dispatch(
+    cmd: &SimpleCommand,
+    ctx: &Ctx,
+    quota: &Arc<DiskQuota>,
+) -> Result<RawOutput, ExecError> {
+    let name = cmd.argv[0].text.as_str();
+    match name {
+        "cat" => cat::run(cmd, ctx, quota),
+        "echo" => echo::run(cmd, ctx, quota),
+        "grep" => grep::run(cmd, ctx, quota),
+        "http" => http::run(cmd, ctx, quota),
+        "ls" => ls::run(cmd, ctx, quota),
+        "sub" => sub::run(cmd, ctx, quota),
+        _ => Err(ExecError::Denied(format!("unknown command: {name}"))),
+    }
+}
+
+/// Runs one whitelisted command on a worker thread with a hard time bound.
+/// On timeout the response is sent immediately; the abandoned worker keeps
+/// running but stays capped by the per-file write bound and the shared quota.
+fn run_with_timeout(
+    cmd: &SimpleCommand,
+    ctx: &Ctx,
+    quota: Arc<DiskQuota>,
+) -> Result<RawOutput, ExecError> {
+    let timeout = Duration::from_secs(ctx.limits.command_timeout_secs);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let owned = ctx.clone();
+    let cmd = cmd.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(dispatch(&cmd, &owned, &quota));
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(ExecError::Denied(format!(
+            "command timed out after {}s",
+            ctx.limits.command_timeout_secs
+        ))),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(ExecError::Fail("command worker panicked".to_string()))
+        }
+    }
+}
+
+fn new_file_sink(
+    ctx: &Ctx,
+    path: &str,
+    append: bool,
+    quota: Arc<DiskQuota>,
+) -> Result<FileSink, ExecError> {
     FileSink::create(
-        ctx.resolver,
+        &ctx.resolver,
         path,
         append,
-        ctx.sensibles,
-        ctx.secrets,
+        &ctx.sensibles,
+        &ctx.secrets,
         ctx.limits.max_write_bytes,
+        Some(quota),
     )
     .map_err(sink_to_exec)
 }
@@ -234,6 +286,9 @@ pub(crate) fn sink_to_exec(err: SinkError) -> ExecError {
         SinkError::WriteBoundExceeded(max) => {
             ExecError::Denied(format!("write bound exceeded: {max} bytes max"))
         }
+        SinkError::QuotaExceeded(max) => {
+            ExecError::Denied(format!("disk quota exceeded: {max} bytes max per command"))
+        }
         SinkError::Io(io) => ExecError::Fail(format!("i/o error: {io}")),
     }
 }
@@ -243,7 +298,7 @@ pub(crate) fn check_read_path(ctx: &Ctx, rel: &str) -> Result<std::path::PathBuf
         .resolver
         .resolve(rel)
         .map_err(|err| ExecError::Denied(format!("{rel}: {err}")))?;
-    if let Some(sensitive) = sensitive_match(ctx.sensibles, ctx.resolver.root(), &target) {
+    if let Some(sensitive) = sensitive_match(&ctx.sensibles, ctx.resolver.root(), &target) {
         return Err(ExecError::Denied(format!("sensitive file: {sensitive}")));
     }
     Ok(target)
@@ -307,14 +362,16 @@ pub(crate) fn write_file(
     rel: &str,
     bytes: &[u8],
     append: bool,
+    quota: Arc<DiskQuota>,
 ) -> Result<(), ExecError> {
     let mut sink = FileSink::create(
-        ctx.resolver,
+        &ctx.resolver,
         rel,
         append,
-        ctx.sensibles,
-        ctx.secrets,
+        &ctx.sensibles,
+        &ctx.secrets,
         ctx.limits.max_write_bytes,
+        Some(quota),
     )
     .map_err(sink_to_exec)?;
     sink.write(bytes).map_err(sink_to_exec)?;
@@ -328,12 +385,12 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
 
-    fn make_ctx<'a>(
-        resolver: &'a Resolver,
-        sensibles: &'a [regex::Regex],
-        secrets: &'a [String],
+    fn make_ctx(
+        resolver: Resolver,
+        sensibles: Vec<regex::Regex>,
+        secrets: Vec<String>,
         max_read_bytes: usize,
-    ) -> Ctx<'a> {
+    ) -> Ctx {
         Ctx {
             resolver,
             sensibles,
@@ -347,7 +404,7 @@ mod tests {
 
     fn run_cmd(dir: &tempfile::TempDir, cmd: &str) -> Result<ExecOutcome, ExecError> {
         let resolver = Resolver::new(dir.path()).unwrap();
-        let ctx = make_ctx(&resolver, &[], &[], DEFAULT_MAX_READ_BYTES);
+        let ctx = make_ctx(resolver, vec![], vec![], DEFAULT_MAX_READ_BYTES);
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
     }
@@ -383,7 +440,7 @@ mod tests {
         fs::write(dir.path().join(".env"), b"SECRET=1").unwrap();
         let resolver = Resolver::new(dir.path()).unwrap();
         let sensibles = vec![regex::Regex::new(r".*\.env$").unwrap()];
-        let ctx = make_ctx(&resolver, &sensibles, &[], DEFAULT_MAX_READ_BYTES);
+        let ctx = make_ctx(resolver, sensibles, vec![], DEFAULT_MAX_READ_BYTES);
         let node = parse_input("cat .env", &HashMap::new()).unwrap();
         let err = execute(&node, &ctx).unwrap_err();
         assert!(matches!(err, ExecError::Denied(_)));
@@ -394,7 +451,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("big.txt"), b"0123456789").unwrap();
         let resolver = Resolver::new(dir.path()).unwrap();
-        let ctx = make_ctx(&resolver, &[], &[], 4);
+        let ctx = make_ctx(resolver, vec![], vec![], 4);
         let node = parse_input("cat big.txt", &HashMap::new()).unwrap();
         let err = execute(&node, &ctx).unwrap_err();
         assert!(matches!(err, ExecError::Denied(_)));
@@ -461,7 +518,7 @@ mod tests {
         fs::write(dir.path().join("in.txt"), b"token=tok-abc123\n").unwrap();
         let resolver = Resolver::new(dir.path()).unwrap();
         let secrets = vec!["tok-abc123".to_string()];
-        let ctx = make_ctx(&resolver, &[], &secrets, DEFAULT_MAX_READ_BYTES);
+        let ctx = make_ctx(resolver, vec![], secrets, DEFAULT_MAX_READ_BYTES);
         let node = parse_input("cat in.txt > out.txt", &HashMap::new()).unwrap();
         let out = execute(&node, &ctx).unwrap();
         assert_eq!(out.code, 0);
@@ -481,23 +538,141 @@ mod tests {
 }
 
 #[cfg(test)]
+mod bound_tests {
+    use super::*;
+    use crate::parse::parse_input;
+    use std::collections::HashMap;
+
+    fn ctx_with(dir: &tempfile::TempDir, limits: Limits) -> Ctx {
+        Ctx {
+            resolver: Resolver::new(dir.path()).unwrap(),
+            sensibles: vec![],
+            secrets: vec![],
+            limits,
+        }
+    }
+
+    #[test]
+    fn command_time_bound_denies_slow_command() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                drop(stream);
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let limits = Limits {
+            command_timeout_secs: 1,
+            ..Limits::default()
+        };
+        let ctx = ctx_with(&dir, limits);
+        let node = parse_input(
+            &format!("http GET http://127.0.0.1:{port}/"),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let err = execute(&node, &ctx).unwrap_err();
+        assert!(
+            matches!(err, ExecError::Denied(ref m) if m.contains("timed out")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn command_time_bound_allows_fast_command() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), b"fast").unwrap();
+        let limits = Limits {
+            command_timeout_secs: 5,
+            ..Limits::default()
+        };
+        let ctx = ctx_with(&dir, limits);
+        let node = parse_input("cat a.txt", &HashMap::new()).unwrap();
+        let out = execute(&node, &ctx).unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "fast");
+    }
+
+    #[test]
+    fn disk_quota_denies_writes_over_per_command_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let limits = Limits {
+            max_command_write_bytes: 5,
+            ..Limits::default()
+        };
+        let ctx = ctx_with(&dir, limits);
+        let node = parse_input("echo hello > out.txt", &HashMap::new()).unwrap();
+        let err = execute(&node, &ctx).unwrap_err();
+        assert!(
+            matches!(err, ExecError::Denied(ref m) if m.contains("disk quota")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn disk_quota_allows_writes_under_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.txt"), "hi").unwrap();
+        let limits = Limits {
+            max_command_write_bytes: 100,
+            ..Limits::default()
+        };
+        let ctx = ctx_with(&dir, limits);
+        let node = parse_input("cat in.txt > out.txt", &HashMap::new()).unwrap();
+        let out = execute(&node, &ctx).unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("out.txt")).unwrap(),
+            "hi"
+        );
+    }
+
+    #[test]
+    fn disk_quota_is_per_command_in_a_seq() {
+        let dir = tempfile::tempdir().unwrap();
+        let limits = Limits {
+            max_command_write_bytes: 4,
+            ..Limits::default()
+        };
+        let ctx = ctx_with(&dir, limits);
+        let node = parse_input("echo ab > a.txt && echo cd > b.txt", &HashMap::new()).unwrap();
+        let out = execute(&node, &ctx).unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "ab\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+            "cd\n"
+        );
+    }
+}
+
+#[cfg(test)]
 mod helper_tests {
     use super::*;
     use crate::parse::parse_input;
     use std::collections::HashMap;
 
-    fn make_ctx<'a>(
-        resolver: &'a Resolver,
-        sensibles: &'a [regex::Regex],
-        secrets: &'a [String],
+    fn make_ctx(
+        resolver: Resolver,
+        sensibles: Vec<regex::Regex>,
+        secrets: Vec<String>,
         limits: Limits,
-    ) -> Ctx<'a> {
+    ) -> Ctx {
         Ctx {
             resolver,
             sensibles,
             secrets,
             limits,
         }
+    }
+
+    fn test_quota() -> Arc<DiskQuota> {
+        Arc::new(DiskQuota::new(1024))
     }
 
     fn args(input: &str) -> Vec<Arg> {
@@ -515,7 +690,7 @@ mod helper_tests {
         fs::write(dir.path().join("b.txt"), b"").unwrap();
         fs::write(dir.path().join("c.rs"), b"").unwrap();
         let resolver = Resolver::new(dir.path()).unwrap();
-        let ctx = make_ctx(&resolver, &[], &[], Limits::default());
+        let ctx = make_ctx(resolver, vec![], vec![], Limits::default());
         let argv = args("cmd plain.txt *.txt");
         let paths = collect_paths(&ctx, &argv[1..]).unwrap();
         assert_eq!(paths, vec!["plain.txt", "a.txt", "b.txt"]);
@@ -532,7 +707,7 @@ mod helper_tests {
             max_glob_matches: 3,
             ..Limits::default()
         };
-        let ctx = make_ctx(&resolver, &[], &[], limits);
+        let ctx = make_ctx(resolver, vec![], vec![], limits);
         let argv = args("cmd *.txt");
         assert!(matches!(
             collect_paths(&ctx, &argv[1..]),
@@ -545,7 +720,7 @@ mod helper_tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("a.txt"), b"data").unwrap();
         let resolver = Resolver::new(dir.path()).unwrap();
-        let ctx = make_ctx(&resolver, &[], &[], Limits::default());
+        let ctx = make_ctx(resolver, vec![], vec![], Limits::default());
         assert_eq!(read_bounded(&ctx, "a.txt").unwrap(), b"data");
     }
 
@@ -561,7 +736,7 @@ mod helper_tests {
             max_read_bytes: 1024,
             ..Limits::default()
         };
-        let ctx = make_ctx(&resolver, &sensibles, &[], limits);
+        let ctx = make_ctx(resolver, sensibles, vec![], limits);
         assert!(matches!(
             read_bounded(&ctx, "sub"),
             Err(ExecError::Fail(m)) if m.contains("not a regular file")
@@ -589,22 +764,22 @@ mod helper_tests {
         let dir = tempfile::tempdir().unwrap();
         let resolver = Resolver::new(dir.path()).unwrap();
         let secrets = vec!["tok-abc123".to_string()];
-        let ctx = make_ctx(&resolver, &[], &secrets, Limits::default());
-        write_file(&ctx, "out.txt", b"hello ", false).unwrap();
-        write_file(&ctx, "out.txt", b"tok-abc123", true).unwrap();
+        let ctx = make_ctx(resolver.clone(), vec![], secrets, Limits::default());
+        write_file(&ctx, "out.txt", b"hello ", false, test_quota()).unwrap();
+        write_file(&ctx, "out.txt", b"tok-abc123", true, test_quota()).unwrap();
         assert_eq!(
             fs::read_to_string(dir.path().join("out.txt")).unwrap(),
             "hello ***"
         );
         assert!(matches!(
-            write_file(&ctx, "../evil.txt", b"x", false),
+            write_file(&ctx, "../evil.txt", b"x", false, test_quota()),
             Err(ExecError::Denied(_))
         ));
         assert!(!dir.path().parent().unwrap().join("evil.txt").exists());
         let sensibles = vec![regex::Regex::new(r".*\.env$").unwrap()];
-        let ctx = make_ctx(&resolver, &sensibles, &[], Limits::default());
+        let ctx = make_ctx(resolver.clone(), sensibles, vec![], Limits::default());
         assert!(matches!(
-            write_file(&ctx, ".env", b"x", false),
+            write_file(&ctx, ".env", b"x", false, test_quota()),
             Err(ExecError::Denied(_))
         ));
         assert!(!dir.path().join(".env").exists());
@@ -612,9 +787,9 @@ mod helper_tests {
             max_write_bytes: 3,
             ..Limits::default()
         };
-        let ctx = make_ctx(&resolver, &[], &[], limits);
+        let ctx = make_ctx(resolver.clone(), vec![], vec![], limits);
         assert!(matches!(
-            write_file(&ctx, "big.txt", b"too long", false),
+            write_file(&ctx, "big.txt", b"too long", false, test_quota()),
             Err(ExecError::Denied(_))
         ));
     }

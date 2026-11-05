@@ -18,6 +18,7 @@ pub enum Denied {
     Io(#[from] std::io::Error),
 }
 
+#[derive(Clone)]
 pub struct Resolver {
     root: PathBuf,
 }

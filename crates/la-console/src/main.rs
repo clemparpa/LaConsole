@@ -10,6 +10,8 @@ use std::path::PathBuf;
 struct Cli {
     #[arg(long, value_name = "PATH")]
     root: PathBuf,
+    #[arg(long, value_name = "N", default_value_t = la_console::commands::DEFAULT_COMMAND_TIMEOUT_SECS)]
+    timeout_secs: u64,
 }
 
 fn main() {
@@ -20,7 +22,9 @@ fn main() {
     }
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    if let Err(err) = la_console::console::run(&cli.root, stdin.lock(), stdout.lock()) {
+    if let Err(err) =
+        la_console::console::run(&cli.root, cli.timeout_secs, stdin.lock(), stdout.lock())
+    {
         eprintln!("error: {err}");
         std::process::exit(1);
     }

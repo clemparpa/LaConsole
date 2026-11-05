@@ -1,7 +1,11 @@
 use super::{collect_paths, read_bounded, write_file, Ctx, ExecError, RawOutput};
 use crate::parse::SimpleCommand;
 
-pub(crate) fn run(cmd: &SimpleCommand, ctx: &Ctx) -> Result<RawOutput, ExecError> {
+pub(crate) fn run(
+    cmd: &SimpleCommand,
+    ctx: &Ctx,
+    quota: &std::sync::Arc<crate::sink::DiskQuota>,
+) -> Result<RawOutput, ExecError> {
     let args: Vec<&str> = cmd.argv[1..].iter().map(|a| a.text.as_str()).collect();
     if args.len() < 3 {
         return Err(ExecError::Fail(
@@ -17,7 +21,7 @@ pub(crate) fn run(cmd: &SimpleCommand, ctx: &Ctx) -> Result<RawOutput, ExecError
     let mut stderr = Vec::new();
     let mut code = 0u16;
     for rel in &targets {
-        match substitute_one(ctx, &pattern, repl, rel) {
+        match substitute_one(ctx, &pattern, repl, rel, quota) {
             Ok(()) => {}
             Err(ExecError::Denied(msg)) => return Err(ExecError::Denied(msg)),
             Err(ExecError::Fail(msg)) => {
@@ -38,12 +42,13 @@ fn substitute_one(
     pattern: &regex::Regex,
     repl: &str,
     rel: &str,
+    quota: &std::sync::Arc<crate::sink::DiskQuota>,
 ) -> Result<(), ExecError> {
     let bytes = read_bounded(ctx, rel)?;
     let content =
         String::from_utf8(bytes).map_err(|_| ExecError::Fail(format!("{rel}: not valid UTF-8")))?;
     let replaced = pattern.replace_all(&content, repl).into_owned();
-    write_file(ctx, rel, replaced.as_bytes(), false)
+    write_file(ctx, rel, replaced.as_bytes(), false, quota.clone())
 }
 
 #[cfg(test)]
@@ -57,9 +62,9 @@ mod tests {
     fn run_cmd(dir: &tempfile::TempDir, cmd: &str) -> Result<ExecOutcome, ExecError> {
         let resolver = Resolver::new(dir.path()).unwrap();
         let ctx = Ctx {
-            resolver: &resolver,
-            sensibles: &[],
-            secrets: &[],
+            resolver,
+            sensibles: vec![],
+            secrets: vec![],
             limits: Limits::default(),
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
@@ -114,9 +119,9 @@ mod tests {
         let resolver = Resolver::new(dir.path()).unwrap();
         let sensibles = vec![regex::Regex::new(r".*\.env$").unwrap()];
         let ctx = Ctx {
-            resolver: &resolver,
-            sensibles: &sensibles,
-            secrets: &[],
+            resolver,
+            sensibles,
+            secrets: vec![],
             limits: Limits::default(),
         };
         let node = parse_input("sub A B .env", &HashMap::new()).unwrap();
@@ -136,9 +141,9 @@ mod tests {
         fs::write(dir.path().join("big.txt"), vec![b'a'; 2048]).unwrap();
         let resolver = Resolver::new(dir.path()).unwrap();
         let ctx = Ctx {
-            resolver: &resolver,
-            sensibles: &[],
-            secrets: &[],
+            resolver,
+            sensibles: vec![],
+            secrets: vec![],
             limits: Limits {
                 max_read_bytes: 1024,
                 ..Limits::default()
@@ -182,9 +187,9 @@ mod tests {
         let resolver = Resolver::new(dir.path()).unwrap();
         let secrets = vec!["tok-abc123".to_string()];
         let ctx = Ctx {
-            resolver: &resolver,
-            sensibles: &[],
-            secrets: &secrets,
+            resolver,
+            sensibles: vec![],
+            secrets,
             limits: Limits::default(),
         };
         let node = parse_input("sub key value a.txt", &HashMap::new()).unwrap();

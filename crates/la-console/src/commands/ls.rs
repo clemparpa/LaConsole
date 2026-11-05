@@ -3,7 +3,11 @@ use std::fs;
 use super::{check_read_path, collect_paths, Ctx, ExecError, RawOutput};
 use crate::parse::{Arg, SimpleCommand};
 
-pub(crate) fn run(cmd: &SimpleCommand, ctx: &Ctx) -> Result<RawOutput, ExecError> {
+pub(crate) fn run(
+    cmd: &SimpleCommand,
+    ctx: &Ctx,
+    _quota: &std::sync::Arc<crate::sink::DiskQuota>,
+) -> Result<RawOutput, ExecError> {
     let mut all = false;
     let mut positional: Vec<&Arg> = Vec::new();
     for arg in &cmd.argv[1..] {
@@ -107,9 +111,9 @@ mod tests {
     fn run_cmd(dir: &tempfile::TempDir, cmd: &str) -> Result<super::super::ExecOutcome, ExecError> {
         let resolver = Resolver::new(dir.path()).unwrap();
         let ctx = Ctx {
-            resolver: &resolver,
-            sensibles: &[],
-            secrets: &[],
+            resolver,
+            sensibles: vec![],
+            secrets: vec![],
             limits: Limits::default(),
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
@@ -182,9 +186,9 @@ mod tests {
         let resolver = Resolver::new(dir.path()).unwrap();
         let sensibles = vec![regex::Regex::new(r".*\.env$").unwrap()];
         let ctx = Ctx {
-            resolver: &resolver,
-            sensibles: &sensibles,
-            secrets: &[],
+            resolver,
+            sensibles,
+            secrets: vec![],
             limits: Limits::default(),
         };
         let node = parse_input("ls .env", &HashMap::new()).unwrap();

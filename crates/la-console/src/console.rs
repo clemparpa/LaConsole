@@ -21,16 +21,22 @@ pub struct Response {
     pub truncated: bool,
 }
 
-pub fn run<R: BufRead, W: Write>(root: &Path, mut input: R, mut output: W) -> std::io::Result<()> {
+pub fn run<R: BufRead, W: Write>(
+    root: &Path,
+    timeout_secs: u64,
+    mut input: R,
+    mut output: W,
+) -> std::io::Result<()> {
     let resolver = Resolver::new(root)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
-    let sensibles: Vec<regex::Regex> = Vec::new();
-    let secrets: Vec<String> = Vec::new();
     let ctx = Ctx {
-        resolver: &resolver,
-        sensibles: &sensibles,
-        secrets: &secrets,
-        limits: Limits::default(),
+        resolver,
+        sensibles: Vec::new(),
+        secrets: Vec::new(),
+        limits: Limits {
+            command_timeout_secs: timeout_secs,
+            ..Limits::default()
+        },
     };
     let mut line = String::new();
     loop {

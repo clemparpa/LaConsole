@@ -1,7 +1,11 @@
 use super::{collect_paths, read_bounded, Ctx, ExecError, RawOutput};
 use crate::parse::SimpleCommand;
 
-pub(crate) fn run(cmd: &SimpleCommand, ctx: &Ctx) -> Result<RawOutput, ExecError> {
+pub(crate) fn run(
+    cmd: &SimpleCommand,
+    ctx: &Ctx,
+    _quota: &std::sync::Arc<crate::sink::DiskQuota>,
+) -> Result<RawOutput, ExecError> {
     let paths = collect_paths(ctx, &cmd.argv[1..])?;
     if paths.is_empty() {
         return Err(ExecError::Fail(

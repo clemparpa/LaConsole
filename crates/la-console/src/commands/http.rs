@@ -11,7 +11,11 @@ pub const MAX_REDIRECTS: usize = 5;
 
 const ALLOWED_HOSTS: [&str; 1] = ["localhost"];
 
-pub(crate) fn run(cmd: &SimpleCommand, ctx: &Ctx) -> Result<RawOutput, ExecError> {
+pub(crate) fn run(
+    cmd: &SimpleCommand,
+    ctx: &Ctx,
+    _quota: &std::sync::Arc<crate::sink::DiskQuota>,
+) -> Result<RawOutput, ExecError> {
     let args: Vec<&str> = cmd.argv[1..].iter().map(|a| a.text.as_str()).collect();
     if args.len() < 2 {
         return Err(ExecError::Fail(
@@ -182,9 +186,9 @@ mod tests {
     fn run_cmd(dir: &tempfile::TempDir, cmd: &str) -> Result<ExecOutcome, ExecError> {
         let resolver = Resolver::new(dir.path()).unwrap();
         let ctx = Ctx {
-            resolver: &resolver,
-            sensibles: &[],
-            secrets: &[],
+            resolver,
+            sensibles: vec![],
+            secrets: vec![],
             limits: Limits::default(),
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
