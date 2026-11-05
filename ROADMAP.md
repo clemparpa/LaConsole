@@ -35,11 +35,16 @@
 - `sink.rs` : trait `Sink` + `FileSink` / `CallerSink` / `PipeSink` (validation avant ouverture, masquage secrets, troncature).
 - **Testable** : tests unitaires par sink.
 
-## Étape 5 — Whitelist, commande par commande 🚧 (`echo` en cours)
+## Étape 5 — Whitelist, commande par commande 🚧 (cette PR : branche unique étape 5)
 
-- `cat` ✅ (PR #9), `ls` (PR #11), puis `echo >`, `grep`, `sub`, `http` (localhost uniquement en v1) — chaque commande dans sa propre PR.
-- ✅ `ls [path]` (PR #11) : `resolve()` + fichiers sensibles, entrées bornées, `.gitignore` respecté par défaut (`--all` pour tout lister) via le walker `ignore`.
-- 🚧 `echo <text> [> path]` (cette PR) : texte literal (pas d'expansion de glob), redirections routées via `FileSink` (validation du chemin avant ouverture, borne d'écriture, masquage des secrets).
+- `cat` ✅ (PR #9), puis `ls`, `echo >`, `grep`, `sub`, `http` (localhost uniquement en v1).
+- ✅ `cat <path...>` (PR #9) : `resolve()` + sensibles + borne de lecture, globs re-résolus.
+- ✅ `ls [path] [--all]` (PR #11) : entrées bornées, `.gitignore` respecté par défaut via le walker `ignore`.
+- ✅ `echo <text> [> path]` (PR #12) : texte littéral, redirections via `FileSink` (validation avant ouverture, borne, masquage).
+- 🚧 `grep <pattern> <path...> [--all]`, `sub <pattern> <repl> <path...>`, `http <METHOD> <url> [--data b] [--header k:v]` (cette PR) :
+  - `grep` : moteur `grep` (ripgrep en lib) sur fichiers du walker `ignore` (`.gitignore` par défaut, `--all` sinon), chaque fichier `resolve()` + borné, matchs bornés ;
+  - `sub` : substitution `regex` (temps linéaire), réécriture via `FileSink` (masquage secrets, borne) ;
+  - `http` : `reqwest` + rustls (manual-roots), allowlist v1 = `localhost`/`127.0.0.1`/`::1` uniquement (bloque 169.254.169.254 et plages privées), redirects revalidés un par un (max 5), timeout 10 s, `--data` et réponse bornés.
 - **Testable** : tests unitaires + e2e par commande.
 
 ## Étape 6 — Commandes trusted

@@ -1,6 +1,9 @@
 pub mod cat;
 pub mod echo;
+pub mod grep;
+pub mod http;
 pub mod ls;
+pub mod sub;
 
 use crate::parse::{Node, Redirect, SimpleCommand};
 use crate::resolve::Resolver;
@@ -89,7 +92,10 @@ fn exec_simple(
     let raw = match name {
         "cat" => cat::run(cmd, ctx)?,
         "echo" => echo::run(cmd, ctx)?,
+        "grep" => grep::run(cmd, ctx)?,
+        "http" => http::run(cmd, ctx)?,
         "ls" => ls::run(cmd, ctx)?,
+        "sub" => sub::run(cmd, ctx)?,
         _ => return Err(ExecError::Denied(format!("unknown command: {name}"))),
     };
 

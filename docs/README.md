@@ -25,10 +25,12 @@ La console est stateless : chaque commande repart du `root`.
 
 ## Commandes disponibles
 
-Whitelist v1 en cours de déploiement (une commande par PR, voir
-[ROADMAP.md](../ROADMAP.md)) : `cat <path...>`, `ls [path] [--all]` et
-`echo <text> [> path]` sont disponibles. Toute autre commande est refusée
-(`denied: unknown command`, code 2).
+Whitelist v1 en cours de déploiement (voir [ROADMAP.md](../ROADMAP.md)) :
+`cat <path...>`, `ls [path] [--all]`, `echo <text> [> path]`,
+`grep <pattern> <path...> [--all]`, `sub <pattern> <repl> <path...>` et
+`http <METHOD> <url> [--data b] [--header k:v]` (v1 : `localhost` uniquement)
+sont disponibles. Toute autre commande est refusée (`denied: unknown command`,
+code 2).
 
 ## Documents de référence
 

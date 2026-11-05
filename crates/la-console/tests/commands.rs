@@ -206,3 +206,69 @@ fn e2e_echo_redirect_escape_is_denied() {
     assert!(resp["stderr"].as_str().unwrap().starts_with("denied:"));
     assert!(!dir.path().parent().unwrap().join("evil.txt").exists());
 }
+
+#[test]
+fn e2e_grep_finds_matches_and_denies_escape() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "foo one\nbar\nfoo two\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("grep foo a.txt");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "a.txt:1:foo one\na.txt:3:foo two\n");
+    let resp = session.send("grep zzz a.txt");
+    assert_eq!(resp["code"], 1);
+    let resp = session.send("grep foo ../outside.txt");
+    assert_eq!(resp["code"], 2);
+    assert!(resp["stderr"].as_str().unwrap().starts_with("denied:"));
+}
+
+#[test]
+fn e2e_sub_rewrites_then_cat_reads_back() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "hello world\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send(r#"sub "h.llo" "bye" a.txt"#);
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    let resp = session.send("cat a.txt");
+    assert_eq!(resp["stdout"], "bye world\n");
+    let resp = session.send("sub a b ../evil.txt");
+    assert_eq!(resp["code"], 2);
+}
+
+#[test]
+fn e2e_http_localhost_only() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nping")
+                .unwrap();
+            stream.flush().unwrap();
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send(&format!("http GET http://127.0.0.1:{port}/"));
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(resp["stdout"], "ping");
+    let resp = session.send("http GET http://169.254.169.254/latest/meta-data");
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert!(resp["stderr"].as_str().unwrap().starts_with("denied:"));
+    let resp = session.send("http GET http://example.com/");
+    assert_eq!(resp["code"], 2);
+}
