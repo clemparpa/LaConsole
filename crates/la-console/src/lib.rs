@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod commands;
 pub mod console;
 pub mod parse;
 pub mod resolve;

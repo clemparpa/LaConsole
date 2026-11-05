@@ -30,14 +30,15 @@
 - Tokenisation `shell-words` + interprétation maison des opérateurs autorisés (`&&`/`;`, pipes, redirections, globs, variables déclarées) → arbre de commandes.
 - **Testable** : proptest « jamais de `trusted` dans un pipe, jamais de sous-exécution » + fuzz `parse_input`.
 
-## Étape 4 — Sink (interface d'écriture unique) ✅ (cette PR)
+## Étape 4 — Sink (interface d'écriture unique) ✅ (PR #8)
 
 - `sink.rs` : trait `Sink` + `FileSink` / `CallerSink` / `PipeSink` (validation avant ouverture, masquage secrets, troncature).
 - **Testable** : tests unitaires par sink.
 
-## Étape 5 — Whitelist, commande par commande
+## Étape 5 — Whitelist, commande par commande 🚧 (cette PR : `cat`)
 
 - `cat`, `ls`, `echo >`, `grep`, `sub`, `http` (localhost uniquement en v1) — chaque commande dans sa propre PR.
+- ✅ `cat <path>` : whitelist + `resolve()` + fichiers sensibles + borne de lecture, exécution câblée dans la boucle JSON (séquences `&&`/`;`, pipes, redirections `>`/`>>`/`2>`/`2>&1`/`&>` via `Sink`).
 - **Testable** : tests unitaires + e2e par commande.
 
 ## Étape 6 — Commandes trusted
