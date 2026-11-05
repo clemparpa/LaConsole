@@ -1,0 +1,19 @@
+[package]
+name = "la-console-fuzz"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+la-console = { path = "../crates/la-console" }
+tempfile = "3"
+
+[[bin]]
+name = "resolve_path"
+path = "fuzz_targets/resolve_path.rs"
+test = false
+doc = false
