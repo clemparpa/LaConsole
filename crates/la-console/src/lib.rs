@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod console;
+pub mod parse;
 pub mod resolve;
 
 #[cfg(test)]
