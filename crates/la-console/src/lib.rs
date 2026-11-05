@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod console;
+pub mod resolve;
 
 #[cfg(test)]
 mod tests {
