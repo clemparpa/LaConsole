@@ -3,6 +3,7 @@
 pub mod console;
 pub mod parse;
 pub mod resolve;
+pub mod sink;
 
 #[cfg(test)]
 mod tests {
