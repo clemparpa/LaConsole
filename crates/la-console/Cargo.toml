@@ -1,0 +1,9 @@
+[package]
+name = "la-console"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Confined fake console driven by an AI agent over a line-by-line JSON protocol"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
