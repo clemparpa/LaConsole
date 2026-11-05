@@ -18,4 +18,10 @@ fn main() {
         eprintln!("error: cannot resolve root {}: {err}", cli.root.display());
         std::process::exit(1);
     }
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    if let Err(err) = la_console::console::run(stdin.lock(), stdout.lock()) {
+        eprintln!("error: {err}");
+        std::process::exit(1);
+    }
 }
