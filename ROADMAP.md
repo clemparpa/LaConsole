@@ -35,10 +35,11 @@
 - `sink.rs` : trait `Sink` + `FileSink` / `CallerSink` / `PipeSink` (validation avant ouverture, masquage secrets, troncature).
 - **Testable** : tests unitaires par sink.
 
-## Étape 5 — Whitelist, commande par commande 🚧 (`ls` en cours)
+## Étape 5 — Whitelist, commande par commande 🚧 (`echo` en cours)
 
-- `cat` ✅ (PR #9), puis `ls`, `echo >`, `grep`, `sub`, `http` (localhost uniquement en v1) — chaque commande dans sa propre PR.
-- 🚧 `ls [path]` (cette PR) : `resolve()` + fichiers sensibles, entrées bornées, `.gitignore` respecté par défaut (`--all` pour tout lister) via le walker `ignore`.
+- `cat` ✅ (PR #9), `ls` (PR #11), puis `echo >`, `grep`, `sub`, `http` (localhost uniquement en v1) — chaque commande dans sa propre PR.
+- ✅ `ls [path]` (PR #11) : `resolve()` + fichiers sensibles, entrées bornées, `.gitignore` respecté par défaut (`--all` pour tout lister) via le walker `ignore`.
+- 🚧 `echo <text> [> path]` (cette PR) : texte literal (pas d'expansion de glob), redirections routées via `FileSink` (validation du chemin avant ouverture, borne d'écriture, masquage des secrets).
 - **Testable** : tests unitaires + e2e par commande.
 
 ## Étape 6 — Commandes trusted

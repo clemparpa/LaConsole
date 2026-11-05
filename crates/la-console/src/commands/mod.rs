@@ -1,4 +1,5 @@
 pub mod cat;
+pub mod echo;
 pub mod ls;
 
 use crate::parse::{Node, Redirect, SimpleCommand};
@@ -87,6 +88,7 @@ fn exec_simple(
     let name = cmd.argv[0].text.as_str();
     let raw = match name {
         "cat" => cat::run(cmd, ctx)?,
+        "echo" => echo::run(cmd, ctx)?,
         "ls" => ls::run(cmd, ctx)?,
         _ => return Err(ExecError::Denied(format!("unknown command: {name}"))),
     };

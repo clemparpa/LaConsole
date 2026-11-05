@@ -26,8 +26,9 @@ La console est stateless : chaque commande repart du `root`.
 ## Commandes disponibles
 
 Whitelist v1 en cours de déploiement (une commande par PR, voir
-[ROADMAP.md](../ROADMAP.md)) : `cat <path...>` et `ls [path] [--all]` sont
-disponibles. Toute autre commande est refusée (`denied: unknown command`, code 2).
+[ROADMAP.md](../ROADMAP.md)) : `cat <path...>`, `ls [path] [--all]` et
+`echo <text> [> path]` sont disponibles. Toute autre commande est refusée
+(`denied: unknown command`, code 2).
 
 ## Documents de référence
 

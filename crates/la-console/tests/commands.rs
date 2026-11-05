@@ -168,3 +168,41 @@ fn e2e_ls_denies_escape_and_missing() {
     assert_eq!(resp["code"], 1);
     assert!(resp["stderr"].as_str().unwrap().contains("nope"));
 }
+
+#[test]
+fn e2e_echo_prints_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("echo hello la-console");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(resp["stdout"], "hello la-console\n");
+    let resp = session.send("echo *.txt");
+    assert_eq!(resp["stdout"], "*.txt\n");
+}
+
+#[test]
+fn e2e_echo_redirect_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("echo payload > out.txt");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "");
+    let resp = session.send("cat out.txt");
+    assert_eq!(resp["stdout"], "payload\n");
+    let resp = session.send("echo more >> out.txt");
+    assert_eq!(resp["ok"], true);
+    let resp = session.send("cat out.txt");
+    assert_eq!(resp["stdout"], "payload\nmore\n");
+}
+
+#[test]
+fn e2e_echo_redirect_escape_is_denied() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("echo x > ../evil.txt");
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert!(resp["stderr"].as_str().unwrap().starts_with("denied:"));
+    assert!(!dir.path().parent().unwrap().join("evil.txt").exists());
+}
