@@ -15,19 +15,21 @@ la-console/
         main.rs       # CLI clap : --root, bornes ; spawn du protocole JSON
         lib.rs        # #![forbid(unsafe_code)]
         console.rs    # boucle protocole JSON stdin/stdout (tokio)
+        parse.rs      # parser shell cadré : shell-words + opérateurs whitelistés -> arbre de commandes
         resolve.rs    # resolve() : confinement root, unique point de passage
         commands/     # cat, ls, echo, grep, sub, http (whitelist)
         trusted.rs    # commandes trusted : parsing + wrapping + checksum + scan + exécution
         sink.rs       # trait Sink + FileSink / CallerSink / PipeSink
       tests/
         evasion.rs    # tests d'évasion (.., symlinks, absolus, unicode...)
+        parse.rs      # proptests du parser (jamais de trusted dans un pipe, jamais de sous-exécution)
         commands.rs
         e2e.rs        # spawn du binaire, protocole JSON ligne par ligne
   tests/              # tests d'intégration haut niveau (niveau workspace)
   fuzz/
     Cargo.toml
     fuzz_targets/
-      parse_input.rs
+      parse_input.rs   # parser shell cadré (invariants : pas de trusted en pipe, pas de sous-exécution)
       resolve_path.rs
 ```
 

@@ -32,13 +32,25 @@ pub fn run<R: BufRead, W: Write>(mut input: R, mut output: W) -> std::io::Result
 
 fn handle_line(line: &str) -> Response {
     match serde_json::from_str::<Request>(line) {
-        Ok(req) if req.op == "exec" => Response {
-            ok: false,
-            code: 2,
-            stdout: String::new(),
-            stderr: format!("denied: no command available yet: {}", req.cmd),
-            truncated: false,
-        },
+        Ok(req) if req.op == "exec" => {
+            let vars = std::collections::HashMap::new();
+            match crate::parse::parse_input(&req.cmd, &vars) {
+                Err(err) => Response {
+                    ok: false,
+                    code: 2,
+                    stdout: String::new(),
+                    stderr: format!("denied: {err}"),
+                    truncated: false,
+                },
+                Ok(_) => Response {
+                    ok: false,
+                    code: 2,
+                    stdout: String::new(),
+                    stderr: format!("denied: no command available yet: {}", req.cmd),
+                    truncated: false,
+                },
+            }
+        }
         Ok(_) => Response {
             ok: false,
             code: 2,
