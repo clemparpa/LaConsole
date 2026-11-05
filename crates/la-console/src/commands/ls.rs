@@ -1,27 +1,24 @@
 use std::fs;
 
-use super::{check_read_path, Ctx, ExecError, RawOutput, DEFAULT_MAX_LS_ENTRIES};
-use crate::parse::{expand_globs, SimpleCommand, DEFAULT_MAX_GLOB_MATCHES};
+use super::{check_read_path, collect_paths, Ctx, ExecError, RawOutput};
+use crate::parse::{Arg, SimpleCommand};
 
 pub(crate) fn run(cmd: &SimpleCommand, ctx: &Ctx) -> Result<RawOutput, ExecError> {
     let mut all = false;
-    let mut paths: Vec<String> = Vec::new();
+    let mut positional: Vec<&Arg> = Vec::new();
     for arg in &cmd.argv[1..] {
-        if arg.glob {
-            let matches = expand_globs(ctx.resolver.root(), &arg.text, DEFAULT_MAX_GLOB_MATCHES)
-                .map_err(|err| ExecError::Denied(err.to_string()))?;
-            paths.extend(matches);
-        } else if arg.text == "--all" || arg.text == "-a" {
+        if !arg.glob && (arg.text == "--all" || arg.text == "-a") {
             all = true;
-        } else if arg.text.starts_with('-') && arg.text.len() > 1 {
+        } else if !arg.glob && arg.text.starts_with('-') && arg.text.len() > 1 {
             return Err(ExecError::Fail(format!(
                 "ls: unrecognized option '{}'",
                 arg.text
             )));
         } else {
-            paths.push(arg.text.clone());
+            positional.push(arg);
         }
     }
+    let mut paths = collect_paths(ctx, positional.iter().copied())?;
     if paths.is_empty() {
         paths.push(".".to_string());
     }
@@ -85,9 +82,10 @@ fn list_one(ctx: &Ctx, rel: &str, all: bool, out: &mut Vec<u8>) -> Result<(), Ex
             }
         }
         names.push(name.to_string());
-        if names.len() > DEFAULT_MAX_LS_ENTRIES {
+        if names.len() > ctx.limits.max_ls_entries {
             return Err(ExecError::Denied(format!(
-                "ls: too many entries (max {DEFAULT_MAX_LS_ENTRIES})"
+                "ls: too many entries (max {})",
+                ctx.limits.max_ls_entries
             )));
         }
     }
@@ -101,11 +99,9 @@ fn list_one(ctx: &Ctx, rel: &str, all: bool, out: &mut Vec<u8>) -> Result<(), Ex
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::execute;
-    use crate::commands::DEFAULT_MAX_READ_BYTES;
+    use crate::commands::{execute, Limits};
     use crate::parse::parse_input;
     use crate::resolve::Resolver;
-    use crate::sink::{DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_MAX_WRITE_BYTES};
     use std::collections::HashMap;
 
     fn run_cmd(dir: &tempfile::TempDir, cmd: &str) -> Result<super::super::ExecOutcome, ExecError> {
@@ -114,9 +110,7 @@ mod tests {
             resolver: &resolver,
             sensibles: &[],
             secrets: &[],
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-            max_read_bytes: DEFAULT_MAX_READ_BYTES,
-            max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+            limits: Limits::default(),
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
@@ -191,9 +185,7 @@ mod tests {
             resolver: &resolver,
             sensibles: &sensibles,
             secrets: &[],
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-            max_read_bytes: DEFAULT_MAX_READ_BYTES,
-            max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+            limits: Limits::default(),
         };
         let node = parse_input("ls .env", &HashMap::new()).unwrap();
         let err = execute(&node, &ctx).unwrap_err();

@@ -19,10 +19,9 @@ pub(crate) fn run(cmd: &SimpleCommand, _ctx: &Ctx) -> Result<RawOutput, ExecErro
 
 #[cfg(test)]
 mod tests {
-    use super::super::{execute, Ctx, ExecError, ExecOutcome, DEFAULT_MAX_READ_BYTES};
+    use super::super::{execute, Ctx, ExecError, ExecOutcome, Limits};
     use crate::parse::parse_input;
     use crate::resolve::Resolver;
-    use crate::sink::{DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_MAX_WRITE_BYTES};
     use std::collections::HashMap;
     use std::fs;
 
@@ -36,15 +35,16 @@ mod tests {
             resolver,
             sensibles,
             secrets,
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-            max_read_bytes: DEFAULT_MAX_READ_BYTES,
-            max_write_bytes,
+            limits: Limits {
+                max_write_bytes,
+                ..Limits::default()
+            },
         }
     }
 
     fn run_cmd(dir: &tempfile::TempDir, cmd: &str) -> Result<ExecOutcome, ExecError> {
         let resolver = Resolver::new(dir.path()).unwrap();
-        let ctx = make_ctx(&resolver, &[], &[], DEFAULT_MAX_WRITE_BYTES);
+        let ctx = make_ctx(&resolver, &[], &[], crate::sink::DEFAULT_MAX_WRITE_BYTES);
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
     }
@@ -120,7 +120,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let resolver = Resolver::new(dir.path()).unwrap();
         let sensibles = vec![regex::Regex::new(r".*\.env$").unwrap()];
-        let ctx = make_ctx(&resolver, &sensibles, &[], DEFAULT_MAX_WRITE_BYTES);
+        let ctx = make_ctx(
+            &resolver,
+            &sensibles,
+            &[],
+            crate::sink::DEFAULT_MAX_WRITE_BYTES,
+        );
         let node = parse_input(r#"echo "KEY=1" > .env"#, &HashMap::new()).unwrap();
         let err = execute(&node, &ctx).unwrap_err();
         assert!(matches!(err, ExecError::Denied(_)));
@@ -142,7 +147,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let resolver = Resolver::new(dir.path()).unwrap();
         let secrets = vec!["tok-abc123".to_string()];
-        let ctx = make_ctx(&resolver, &[], &secrets, DEFAULT_MAX_WRITE_BYTES);
+        let ctx = make_ctx(
+            &resolver,
+            &[],
+            &secrets,
+            crate::sink::DEFAULT_MAX_WRITE_BYTES,
+        );
         let node = parse_input(r#"echo "token=tok-abc123" > out.txt"#, &HashMap::new()).unwrap();
         let out = execute(&node, &ctx).unwrap();
         assert_eq!(out.code, 0);
@@ -155,7 +165,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let resolver = Resolver::new(dir.path()).unwrap();
         let secrets = vec!["tok-abc123".to_string()];
-        let ctx = make_ctx(&resolver, &[], &secrets, DEFAULT_MAX_WRITE_BYTES);
+        let ctx = make_ctx(
+            &resolver,
+            &[],
+            &secrets,
+            crate::sink::DEFAULT_MAX_WRITE_BYTES,
+        );
         let node = parse_input("echo tok-abc123", &HashMap::new()).unwrap();
         let out = execute(&node, &ctx).unwrap();
         assert_eq!(out.stdout, "***\n");

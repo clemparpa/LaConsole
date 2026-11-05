@@ -1,13 +1,13 @@
 use std::fs;
 
-use super::{check_read_path, Ctx, ExecError, RawOutput, DEFAULT_MAX_LS_ENTRIES};
-use crate::parse::{expand_globs, SimpleCommand, DEFAULT_MAX_GLOB_MATCHES};
+use super::{check_read_bound, collect_paths, resolve_read_target, Ctx, ExecError, RawOutput};
+use crate::parse::{Arg, SimpleCommand};
 
 pub const DEFAULT_MAX_GREP_MATCHES: usize = 10_000;
 
 pub(crate) fn run(cmd: &SimpleCommand, ctx: &Ctx) -> Result<RawOutput, ExecError> {
     let mut all = false;
-    let mut positional: Vec<&crate::parse::Arg> = Vec::new();
+    let mut positional: Vec<&Arg> = Vec::new();
     for arg in &cmd.argv[1..] {
         if !arg.glob && (arg.text == "--all" || arg.text == "-a") {
             all = true;
@@ -29,16 +29,7 @@ pub(crate) fn run(cmd: &SimpleCommand, ctx: &Ctx) -> Result<RawOutput, ExecError
     let matcher = grep::regex::RegexMatcher::new(&pattern)
         .map_err(|err| ExecError::Fail(format!("grep: invalid pattern: {err}")))?;
 
-    let mut targets: Vec<String> = Vec::new();
-    for arg in &positional[1..] {
-        if arg.glob {
-            let matches = expand_globs(ctx.resolver.root(), &arg.text, DEFAULT_MAX_GLOB_MATCHES)
-                .map_err(|err| ExecError::Denied(err.to_string()))?;
-            targets.extend(matches);
-        } else {
-            targets.push(arg.text.clone());
-        }
-    }
+    let targets = collect_paths(ctx, positional[1..].iter().copied())?;
     if targets.is_empty() {
         return Err(ExecError::Fail(
             "grep: missing file operand (stdin is not available)".to_string(),
@@ -78,8 +69,7 @@ fn search_target(
     out: &mut Vec<u8>,
     match_count: &mut usize,
 ) -> Result<bool, ExecError> {
-    let target = check_read_path(ctx, rel)?;
-    let meta = fs::metadata(&target).map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
+    let (target, meta) = resolve_read_target(ctx, rel)?;
     if meta.is_dir() {
         let mut walker = ignore::WalkBuilder::new(&target);
         walker
@@ -97,9 +87,10 @@ fn search_target(
             if entry.depth() == 0 || !entry.file_type().is_some_and(|ft| ft.is_file()) {
                 continue;
             }
-            if files.len() > DEFAULT_MAX_LS_ENTRIES {
+            if files.len() > ctx.limits.max_grep_files {
                 return Err(ExecError::Denied(format!(
-                    "grep: too many files (max {DEFAULT_MAX_LS_ENTRIES})"
+                    "grep: too many files (max {})",
+                    ctx.limits.max_grep_files
                 )));
             }
             let Some(entry_rel) = entry
@@ -119,27 +110,30 @@ fn search_target(
         files.sort();
         let mut found_any = false;
         for (entry_rel, entry_path) in files {
-            if fs::metadata(&entry_path)
-                .map(|m| m.len() > ctx.max_read_bytes as u64)
-                .unwrap_or(true)
-            {
-                return Err(ExecError::Denied(format!(
-                    "grep: {entry_rel}: file too large ({} bytes max)",
-                    ctx.max_read_bytes
-                )));
-            }
-            let found = search_file(matcher, &entry_rel, &entry_path, out, match_count)?;
+            let fmeta = fs::metadata(&entry_path)
+                .map_err(|err| ExecError::Fail(format!("{entry_rel}: {err}")))?;
+            check_read_bound(ctx, &entry_rel, &fmeta)?;
+            let found = search_file(
+                matcher,
+                &entry_rel,
+                &entry_path,
+                out,
+                match_count,
+                ctx.limits.max_grep_matches,
+            )?;
             found_any |= found;
         }
         Ok(found_any)
     } else if meta.is_file() {
-        if meta.len() > ctx.max_read_bytes as u64 {
-            return Err(ExecError::Denied(format!(
-                "grep: {rel}: file too large ({} bytes max)",
-                ctx.max_read_bytes
-            )));
-        }
-        search_file(matcher, rel, &target, out, match_count)
+        check_read_bound(ctx, rel, &meta)?;
+        search_file(
+            matcher,
+            rel,
+            &target,
+            out,
+            match_count,
+            ctx.limits.max_grep_matches,
+        )
     } else {
         Err(ExecError::Fail(format!("{rel}: not a regular file")))
     }
@@ -151,6 +145,7 @@ fn search_file(
     path: &std::path::Path,
     out: &mut Vec<u8>,
     match_count: &mut usize,
+    limit: usize,
 ) -> Result<bool, ExecError> {
     let mut searcher = grep::searcher::Searcher::new();
     searcher.set_binary_detection(grep::searcher::BinaryDetection::quit(b'\0'));
@@ -160,13 +155,14 @@ fn search_file(
         match_count,
         found: false,
         overflow: false,
+        limit,
     };
     searcher
         .search_path(matcher, path, &mut sink)
         .map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
     if sink.overflow {
         return Err(ExecError::Denied(format!(
-            "grep: too many matches (max {DEFAULT_MAX_GREP_MATCHES})"
+            "grep: too many matches (max {limit})"
         )));
     }
     Ok(sink.found)
@@ -178,6 +174,7 @@ struct CollectSink<'a> {
     match_count: &'a mut usize,
     found: bool,
     overflow: bool,
+    limit: usize,
 }
 
 impl grep::searcher::Sink for CollectSink<'_> {
@@ -190,7 +187,7 @@ impl grep::searcher::Sink for CollectSink<'_> {
     ) -> Result<bool, Self::Error> {
         self.found = true;
         *self.match_count += 1;
-        if *self.match_count > DEFAULT_MAX_GREP_MATCHES {
+        if *self.match_count > self.limit {
             self.overflow = true;
             return Ok(false);
         }
@@ -204,10 +201,9 @@ impl grep::searcher::Sink for CollectSink<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{execute, Ctx, ExecError, ExecOutcome, DEFAULT_MAX_READ_BYTES};
+    use super::super::{execute, Ctx, ExecError, ExecOutcome, Limits};
     use crate::parse::parse_input;
     use crate::resolve::Resolver;
-    use crate::sink::{DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_MAX_WRITE_BYTES};
     use std::collections::HashMap;
     use std::fs;
 
@@ -217,9 +213,7 @@ mod tests {
             resolver: &resolver,
             sensibles: &[],
             secrets: &[],
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-            max_read_bytes: DEFAULT_MAX_READ_BYTES,
-            max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+            limits: Limits::default(),
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
@@ -290,9 +284,7 @@ mod tests {
             resolver: &resolver,
             sensibles: &sensibles,
             secrets: &[],
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-            max_read_bytes: DEFAULT_MAX_READ_BYTES,
-            max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+            limits: Limits::default(),
         };
         let node = parse_input("grep SECRET .env", &HashMap::new()).unwrap();
         assert!(matches!(
@@ -310,9 +302,10 @@ mod tests {
             resolver: &resolver,
             sensibles: &[],
             secrets: &[],
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-            max_read_bytes: 1024,
-            max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+            limits: Limits {
+                max_read_bytes: 1024,
+                ..Limits::default()
+            },
         };
         let node = parse_input("grep a big.txt", &HashMap::new()).unwrap();
         assert!(matches!(

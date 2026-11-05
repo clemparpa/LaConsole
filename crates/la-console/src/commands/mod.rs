@@ -5,20 +5,54 @@ pub mod http;
 pub mod ls;
 pub mod sub;
 
-use crate::parse::{Node, Redirect, SimpleCommand};
+use std::fs;
+use std::path::PathBuf;
+
+use crate::parse::{expand_globs, Arg, Node, Redirect, SimpleCommand};
 use crate::resolve::Resolver;
 use crate::sink::{sensitive_match, CallerSink, FileSink, PipeSink, Sink, SinkError};
 
 pub const DEFAULT_MAX_READ_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MAX_LS_ENTRIES: usize = 10_000;
 
+#[derive(Debug, Clone)]
+pub struct Limits {
+    pub max_output_bytes: usize,
+    pub max_read_bytes: usize,
+    pub max_write_bytes: usize,
+    pub max_glob_matches: usize,
+    pub max_ls_entries: usize,
+    pub max_grep_files: usize,
+    pub max_grep_matches: usize,
+    pub max_http_body_bytes: usize,
+    pub max_http_response_bytes: usize,
+    pub max_http_redirects: usize,
+    pub http_timeout_secs: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_output_bytes: crate::sink::DEFAULT_MAX_OUTPUT_BYTES,
+            max_read_bytes: DEFAULT_MAX_READ_BYTES,
+            max_write_bytes: crate::sink::DEFAULT_MAX_WRITE_BYTES,
+            max_glob_matches: crate::parse::DEFAULT_MAX_GLOB_MATCHES,
+            max_ls_entries: DEFAULT_MAX_LS_ENTRIES,
+            max_grep_files: DEFAULT_MAX_LS_ENTRIES,
+            max_grep_matches: grep::DEFAULT_MAX_GREP_MATCHES,
+            max_http_body_bytes: http::DEFAULT_MAX_HTTP_BODY_BYTES,
+            max_http_response_bytes: http::DEFAULT_MAX_HTTP_RESPONSE_BYTES,
+            max_http_redirects: http::MAX_REDIRECTS,
+            http_timeout_secs: http::DEFAULT_HTTP_TIMEOUT_SECS,
+        }
+    }
+}
+
 pub struct Ctx<'a> {
     pub resolver: &'a Resolver,
     pub sensibles: &'a [regex::Regex],
     pub secrets: &'a [String],
-    pub max_output_bytes: usize,
-    pub max_read_bytes: usize,
-    pub max_write_bytes: usize,
+    pub limits: Limits,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -138,13 +172,13 @@ fn exec_simple(
             raw.stdout.clone()
         };
         if final_output {
-            let mut sink = CallerSink::new(ctx.max_output_bytes, ctx.secrets);
+            let mut sink = CallerSink::new(ctx.limits.max_output_bytes, ctx.secrets);
             sink.write(&bytes).map_err(sink_to_exec)?;
             let (text, was_truncated) = sink.finish();
             out_string = text;
             truncated |= was_truncated;
         } else {
-            let mut sink = PipeSink::new(ctx.max_output_bytes);
+            let mut sink = PipeSink::new(ctx.limits.max_output_bytes);
             sink.write(&bytes).map_err(sink_to_exec)?;
             let (bytes, _was_truncated) = sink.finish();
             pipe_data = bytes;
@@ -155,7 +189,7 @@ fn exec_simple(
         if let Some(sink) = err_file.as_mut() {
             sink.write(&raw.stderr).map_err(sink_to_exec)?;
         } else {
-            let mut sink = CallerSink::new(ctx.max_output_bytes, ctx.secrets);
+            let mut sink = CallerSink::new(ctx.limits.max_output_bytes, ctx.secrets);
             sink.write(&raw.stderr).map_err(sink_to_exec)?;
             let (text, was_truncated) = sink.finish();
             err_string = text;
@@ -188,12 +222,12 @@ fn new_file_sink(ctx: &Ctx, path: &str, append: bool) -> Result<FileSink, ExecEr
         append,
         ctx.sensibles,
         ctx.secrets,
-        ctx.max_write_bytes,
+        ctx.limits.max_write_bytes,
     )
     .map_err(sink_to_exec)
 }
 
-fn sink_to_exec(err: SinkError) -> ExecError {
+pub(crate) fn sink_to_exec(err: SinkError) -> ExecError {
     match err {
         SinkError::Denied(denied) => ExecError::Denied(denied.to_string()),
         SinkError::Sensitive(path) => ExecError::Denied(format!("sensitive file: {path}")),
@@ -215,11 +249,82 @@ pub(crate) fn check_read_path(ctx: &Ctx, rel: &str) -> Result<std::path::PathBuf
     Ok(target)
 }
 
+pub(crate) fn collect_paths<'a>(
+    ctx: &Ctx,
+    args: impl IntoIterator<Item = &'a Arg>,
+) -> Result<Vec<String>, ExecError> {
+    let mut paths = Vec::new();
+    for arg in args {
+        if arg.glob {
+            paths.extend(
+                expand_globs(ctx.resolver.root(), &arg.text, ctx.limits.max_glob_matches)
+                    .map_err(|err| ExecError::Denied(err.to_string()))?,
+            );
+        } else {
+            paths.push(arg.text.clone());
+        }
+    }
+    Ok(paths)
+}
+
+pub(crate) fn resolve_read_target(
+    ctx: &Ctx,
+    rel: &str,
+) -> Result<(PathBuf, fs::Metadata), ExecError> {
+    let target = check_read_path(ctx, rel)?;
+    let meta = fs::metadata(&target).map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
+    Ok((target, meta))
+}
+
+pub(crate) fn check_read_bound(ctx: &Ctx, rel: &str, meta: &fs::Metadata) -> Result<(), ExecError> {
+    if meta.len() > ctx.limits.max_read_bytes as u64 {
+        return Err(ExecError::Denied(format!(
+            "{rel}: file too large ({} bytes max)",
+            ctx.limits.max_read_bytes
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn read_bounded(ctx: &Ctx, rel: &str) -> Result<Vec<u8>, ExecError> {
+    let (target, meta) = resolve_read_target(ctx, rel)?;
+    if !meta.is_file() {
+        return Err(ExecError::Fail(format!("{rel}: not a regular file")));
+    }
+    check_read_bound(ctx, rel, &meta)?;
+    let bytes = fs::read(&target).map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
+    if bytes.len() > ctx.limits.max_read_bytes {
+        return Err(ExecError::Denied(format!(
+            "{rel}: file too large ({} bytes max)",
+            ctx.limits.max_read_bytes
+        )));
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn write_file(
+    ctx: &Ctx,
+    rel: &str,
+    bytes: &[u8],
+    append: bool,
+) -> Result<(), ExecError> {
+    let mut sink = FileSink::create(
+        ctx.resolver,
+        rel,
+        append,
+        ctx.sensibles,
+        ctx.secrets,
+        ctx.limits.max_write_bytes,
+    )
+    .map_err(sink_to_exec)?;
+    sink.write(bytes).map_err(sink_to_exec)?;
+    sink.finish().map_err(sink_to_exec)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::parse::parse_input;
-    use crate::sink::{DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_MAX_WRITE_BYTES};
     use std::collections::HashMap;
     use std::fs;
 
@@ -233,9 +338,10 @@ mod tests {
             resolver,
             sensibles,
             secrets,
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-            max_read_bytes,
-            max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+            limits: Limits {
+                max_read_bytes,
+                ..Limits::default()
+            },
         }
     }
 
@@ -371,5 +477,161 @@ mod tests {
         let err = run_cmd(&dir, "cat in.txt > ../evil.txt").unwrap_err();
         assert!(matches!(err, ExecError::Denied(_)));
         assert!(!dir.path().parent().unwrap().join("evil.txt").exists());
+    }
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+    use crate::parse::parse_input;
+    use std::collections::HashMap;
+
+    fn make_ctx<'a>(
+        resolver: &'a Resolver,
+        sensibles: &'a [regex::Regex],
+        secrets: &'a [String],
+        limits: Limits,
+    ) -> Ctx<'a> {
+        Ctx {
+            resolver,
+            sensibles,
+            secrets,
+            limits,
+        }
+    }
+
+    fn args(input: &str) -> Vec<Arg> {
+        let node = parse_input(input, &HashMap::new()).unwrap();
+        let Node::Simple(cmd) = node else {
+            panic!("expected Simple");
+        };
+        cmd.argv
+    }
+
+    #[test]
+    fn collect_paths_passes_plain_args_and_expands_globs() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), b"").unwrap();
+        fs::write(dir.path().join("b.txt"), b"").unwrap();
+        fs::write(dir.path().join("c.rs"), b"").unwrap();
+        let resolver = Resolver::new(dir.path()).unwrap();
+        let ctx = make_ctx(&resolver, &[], &[], Limits::default());
+        let argv = args("cmd plain.txt *.txt");
+        let paths = collect_paths(&ctx, &argv[1..]).unwrap();
+        assert_eq!(paths, vec!["plain.txt", "a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn collect_paths_denies_glob_overflow() {
+        let dir = tempfile::tempdir().unwrap();
+        for n in 0..5 {
+            fs::write(dir.path().join(format!("f{n}.txt")), b"").unwrap();
+        }
+        let resolver = Resolver::new(dir.path()).unwrap();
+        let limits = Limits {
+            max_glob_matches: 3,
+            ..Limits::default()
+        };
+        let ctx = make_ctx(&resolver, &[], &[], limits);
+        let argv = args("cmd *.txt");
+        assert!(matches!(
+            collect_paths(&ctx, &argv[1..]),
+            Err(ExecError::Denied(_))
+        ));
+    }
+
+    #[test]
+    fn read_bounded_reads_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), b"data").unwrap();
+        let resolver = Resolver::new(dir.path()).unwrap();
+        let ctx = make_ctx(&resolver, &[], &[], Limits::default());
+        assert_eq!(read_bounded(&ctx, "a.txt").unwrap(), b"data");
+    }
+
+    #[test]
+    fn read_bounded_rejects_dir_missing_oversize_escape_sensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("big.bin"), vec![0u8; 2048]).unwrap();
+        fs::write(dir.path().join(".env"), b"X=1").unwrap();
+        let resolver = Resolver::new(dir.path()).unwrap();
+        let sensibles = vec![regex::Regex::new(r".*\.env$").unwrap()];
+        let limits = Limits {
+            max_read_bytes: 1024,
+            ..Limits::default()
+        };
+        let ctx = make_ctx(&resolver, &sensibles, &[], limits);
+        assert!(matches!(
+            read_bounded(&ctx, "sub"),
+            Err(ExecError::Fail(m)) if m.contains("not a regular file")
+        ));
+        assert!(matches!(
+            read_bounded(&ctx, "missing.txt"),
+            Err(ExecError::Fail(_))
+        ));
+        assert!(matches!(
+            read_bounded(&ctx, "big.bin"),
+            Err(ExecError::Denied(_))
+        ));
+        assert!(matches!(
+            read_bounded(&ctx, "../escape.txt"),
+            Err(ExecError::Denied(_))
+        ));
+        assert!(matches!(
+            read_bounded(&ctx, ".env"),
+            Err(ExecError::Denied(_))
+        ));
+    }
+
+    #[test]
+    fn write_file_writes_appends_and_enforces_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolver = Resolver::new(dir.path()).unwrap();
+        let secrets = vec!["tok-abc123".to_string()];
+        let ctx = make_ctx(&resolver, &[], &secrets, Limits::default());
+        write_file(&ctx, "out.txt", b"hello ", false).unwrap();
+        write_file(&ctx, "out.txt", b"tok-abc123", true).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("out.txt")).unwrap(),
+            "hello ***"
+        );
+        assert!(matches!(
+            write_file(&ctx, "../evil.txt", b"x", false),
+            Err(ExecError::Denied(_))
+        ));
+        assert!(!dir.path().parent().unwrap().join("evil.txt").exists());
+        let sensibles = vec![regex::Regex::new(r".*\.env$").unwrap()];
+        let ctx = make_ctx(&resolver, &sensibles, &[], Limits::default());
+        assert!(matches!(
+            write_file(&ctx, ".env", b"x", false),
+            Err(ExecError::Denied(_))
+        ));
+        assert!(!dir.path().join(".env").exists());
+        let limits = Limits {
+            max_write_bytes: 3,
+            ..Limits::default()
+        };
+        let ctx = make_ctx(&resolver, &[], &[], limits);
+        assert!(matches!(
+            write_file(&ctx, "big.txt", b"too long", false),
+            Err(ExecError::Denied(_))
+        ));
+    }
+
+    #[test]
+    fn limits_defaults_are_sane() {
+        let l = Limits::default();
+        assert!(l.max_output_bytes > 0);
+        assert!(l.max_read_bytes > 0);
+        assert!(l.max_write_bytes > 0);
+        assert!(l.max_glob_matches > 0);
+        assert!(l.max_ls_entries > 0);
+        assert!(l.max_grep_files > 0);
+        assert!(l.max_grep_matches > 0);
+        assert!(l.max_http_body_bytes > 0);
+        assert!(l.max_http_response_bytes > 0);
+        assert!(l.max_http_redirects > 0);
+        assert!(l.http_timeout_secs > 0);
     }
 }

@@ -3,9 +3,8 @@ use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::Path;
 
-use crate::commands::{execute, Ctx, ExecError, DEFAULT_MAX_READ_BYTES};
+use crate::commands::{execute, Ctx, ExecError, Limits};
 use crate::resolve::Resolver;
-use crate::sink::{DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_MAX_WRITE_BYTES};
 
 #[derive(Debug, Deserialize)]
 pub struct Request {
@@ -31,9 +30,7 @@ pub fn run<R: BufRead, W: Write>(root: &Path, mut input: R, mut output: W) -> st
         resolver: &resolver,
         sensibles: &sensibles,
         secrets: &secrets,
-        max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-        max_read_bytes: DEFAULT_MAX_READ_BYTES,
-        max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+        limits: Limits::default(),
     };
     let mut line = String::new();
     loop {

@@ -1,8 +1,5 @@
-use std::fs;
-
-use super::{check_read_path, Ctx, ExecError, RawOutput};
-use crate::parse::{expand_globs, SimpleCommand, DEFAULT_MAX_GLOB_MATCHES};
-use crate::sink::{FileSink, Sink};
+use super::{collect_paths, read_bounded, write_file, Ctx, ExecError, RawOutput};
+use crate::parse::SimpleCommand;
 
 pub(crate) fn run(cmd: &SimpleCommand, ctx: &Ctx) -> Result<RawOutput, ExecError> {
     let args: Vec<&str> = cmd.argv[1..].iter().map(|a| a.text.as_str()).collect();
@@ -15,16 +12,7 @@ pub(crate) fn run(cmd: &SimpleCommand, ctx: &Ctx) -> Result<RawOutput, ExecError
         .map_err(|err| ExecError::Fail(format!("sub: invalid pattern: {err}")))?;
     let repl = args[1];
 
-    let mut targets: Vec<String> = Vec::new();
-    for arg in &cmd.argv[3..] {
-        if arg.glob {
-            let matches = expand_globs(ctx.resolver.root(), &arg.text, DEFAULT_MAX_GLOB_MATCHES)
-                .map_err(|err| ExecError::Denied(err.to_string()))?;
-            targets.extend(matches);
-        } else {
-            targets.push(arg.text.clone());
-        }
-    }
+    let targets = collect_paths(ctx, &cmd.argv[3..])?;
 
     let mut stderr = Vec::new();
     let mut code = 0u16;
@@ -51,43 +39,18 @@ fn substitute_one(
     repl: &str,
     rel: &str,
 ) -> Result<(), ExecError> {
-    let target = check_read_path(ctx, rel)?;
-    let meta = fs::metadata(&target).map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
-    if !meta.is_file() {
-        return Err(ExecError::Fail(format!("{rel}: not a regular file")));
-    }
-    if meta.len() > ctx.max_read_bytes as u64 {
-        return Err(ExecError::Denied(format!(
-            "{rel}: file too large ({} bytes max)",
-            ctx.max_read_bytes
-        )));
-    }
-    let bytes = fs::read(&target).map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
+    let bytes = read_bounded(ctx, rel)?;
     let content =
         String::from_utf8(bytes).map_err(|_| ExecError::Fail(format!("{rel}: not valid UTF-8")))?;
     let replaced = pattern.replace_all(&content, repl).into_owned();
-    let mut sink = FileSink::create(
-        ctx.resolver,
-        rel,
-        false,
-        ctx.sensibles,
-        ctx.secrets,
-        ctx.max_write_bytes,
-    )
-    .map_err(|err| ExecError::Denied(err.to_string()))?;
-    sink.write(replaced.as_bytes())
-        .map_err(|err| ExecError::Denied(err.to_string()))?;
-    sink.finish()
-        .map_err(|err| ExecError::Denied(err.to_string()))?;
-    Ok(())
+    write_file(ctx, rel, replaced.as_bytes(), false)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::{execute, Ctx, ExecError, ExecOutcome, DEFAULT_MAX_READ_BYTES};
+    use super::super::{execute, Ctx, ExecError, ExecOutcome, Limits};
     use crate::parse::parse_input;
     use crate::resolve::Resolver;
-    use crate::sink::{DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_MAX_WRITE_BYTES};
     use std::collections::HashMap;
     use std::fs;
 
@@ -97,9 +60,7 @@ mod tests {
             resolver: &resolver,
             sensibles: &[],
             secrets: &[],
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-            max_read_bytes: DEFAULT_MAX_READ_BYTES,
-            max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+            limits: Limits::default(),
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
@@ -156,9 +117,7 @@ mod tests {
             resolver: &resolver,
             sensibles: &sensibles,
             secrets: &[],
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-            max_read_bytes: DEFAULT_MAX_READ_BYTES,
-            max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+            limits: Limits::default(),
         };
         let node = parse_input("sub A B .env", &HashMap::new()).unwrap();
         assert!(matches!(
@@ -180,9 +139,10 @@ mod tests {
             resolver: &resolver,
             sensibles: &[],
             secrets: &[],
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-            max_read_bytes: 1024,
-            max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+            limits: Limits {
+                max_read_bytes: 1024,
+                ..Limits::default()
+            },
         };
         let node = parse_input("sub a b big.txt", &HashMap::new()).unwrap();
         assert!(matches!(
@@ -225,9 +185,7 @@ mod tests {
             resolver: &resolver,
             sensibles: &[],
             secrets: &secrets,
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-            max_read_bytes: DEFAULT_MAX_READ_BYTES,
-            max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+            limits: Limits::default(),
         };
         let node = parse_input("sub key value a.txt", &HashMap::new()).unwrap();
         let out = execute(&node, &ctx).unwrap();

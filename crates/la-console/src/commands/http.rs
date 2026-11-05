@@ -11,7 +11,7 @@ pub const MAX_REDIRECTS: usize = 5;
 
 const ALLOWED_HOSTS: [&str; 1] = ["localhost"];
 
-pub(crate) fn run(cmd: &SimpleCommand, _ctx: &Ctx) -> Result<RawOutput, ExecError> {
+pub(crate) fn run(cmd: &SimpleCommand, ctx: &Ctx) -> Result<RawOutput, ExecError> {
     let args: Vec<&str> = cmd.argv[1..].iter().map(|a| a.text.as_str()).collect();
     if args.len() < 2 {
         return Err(ExecError::Fail(
@@ -29,10 +29,10 @@ pub(crate) fn run(cmd: &SimpleCommand, _ctx: &Ctx) -> Result<RawOutput, ExecErro
                 let Some(body) = args.get(i + 1) else {
                     return Err(ExecError::Fail("http: --data needs a value".to_string()));
                 };
-                if body.len() > DEFAULT_MAX_HTTP_BODY_BYTES {
+                if body.len() > ctx.limits.max_http_body_bytes {
                     return Err(ExecError::Denied(format!(
                         "http: --data too large ({} bytes max)",
-                        DEFAULT_MAX_HTTP_BODY_BYTES
+                        ctx.limits.max_http_body_bytes
                     )));
                 }
                 data = Some(body.as_bytes().to_vec());
@@ -59,12 +59,12 @@ pub(crate) fn run(cmd: &SimpleCommand, _ctx: &Ctx) -> Result<RawOutput, ExecErro
     }
 
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(ctx.limits.http_timeout_secs))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|err| ExecError::Fail(format!("http: client error: {err}")))?;
 
-    let mut redirects_left = MAX_REDIRECTS;
+    let mut redirects_left = ctx.limits.max_http_redirects;
     loop {
         let mut req = client.request(method.clone(), url.as_str());
         for (k, v) in &headers {
@@ -84,7 +84,8 @@ pub(crate) fn run(cmd: &SimpleCommand, _ctx: &Ctx) -> Result<RawOutput, ExecErro
         if status.is_redirection() {
             if redirects_left == 0 {
                 return Err(ExecError::Denied(format!(
-                    "http: too many redirects (max {MAX_REDIRECTS})"
+                    "http: too many redirects (max {})",
+                    ctx.limits.max_http_redirects
                 )));
             }
             redirects_left -= 1;
@@ -103,13 +104,13 @@ pub(crate) fn run(cmd: &SimpleCommand, _ctx: &Ctx) -> Result<RawOutput, ExecErro
             continue;
         }
         let mut body = Vec::new();
-        resp.take((DEFAULT_MAX_HTTP_RESPONSE_BYTES + 1) as u64)
+        resp.take((ctx.limits.max_http_response_bytes + 1) as u64)
             .read_to_end(&mut body)
             .map_err(|err| ExecError::Fail(format!("http: read error: {err}")))?;
-        if body.len() > DEFAULT_MAX_HTTP_RESPONSE_BYTES {
+        if body.len() > ctx.limits.max_http_response_bytes {
             return Err(ExecError::Denied(format!(
                 "http: response too large ({} bytes max)",
-                DEFAULT_MAX_HTTP_RESPONSE_BYTES
+                ctx.limits.max_http_response_bytes
             )));
         }
         let code = if status.is_success() { 0 } else { 1 };
@@ -170,11 +171,10 @@ fn parse_url(raw: &str) -> Result<reqwest::Url, ExecError> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{execute, Ctx, ExecError, ExecOutcome, DEFAULT_MAX_READ_BYTES};
+    use super::super::{execute, Ctx, ExecError, ExecOutcome, Limits};
     use super::{parse_url, DEFAULT_MAX_HTTP_BODY_BYTES, MAX_REDIRECTS};
     use crate::parse::parse_input;
     use crate::resolve::Resolver;
-    use crate::sink::{DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_MAX_WRITE_BYTES};
     use std::collections::HashMap;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
@@ -185,9 +185,7 @@ mod tests {
             resolver: &resolver,
             sensibles: &[],
             secrets: &[],
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-            max_read_bytes: DEFAULT_MAX_READ_BYTES,
-            max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+            limits: Limits::default(),
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
