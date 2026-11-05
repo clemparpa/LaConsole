@@ -34,8 +34,8 @@ impl Resolver {
     }
 
     pub fn resolve(&self, input: &str) -> Result<PathBuf, Denied> {
-        let relative = normalize_relative(&self.root, input)?;
-        let target = canonical_within(&self.root, &relative)?;
+        let raw = normalize(input)?;
+        let target = canonical_within(&self.root, &raw)?;
         check_hardlink(&self.root, &target)?;
         Ok(target)
     }
@@ -45,32 +45,28 @@ pub fn resolve(root: &Path, input: &str) -> Result<PathBuf, Denied> {
     Resolver::new(root)?.resolve(input)
 }
 
-fn normalize_relative(root: &Path, input: &str) -> Result<PathBuf, Denied> {
+fn normalize(input: &str) -> Result<PathBuf, Denied> {
     if input.contains('\0') {
         return Err(Denied::NulByte);
     }
-    let candidate = Path::new(input);
-    let relative: PathBuf = if candidate.is_absolute() {
-        match candidate.strip_prefix(root) {
-            Ok(rel) => rel.to_path_buf(),
-            Err(_) => return Err(Denied::AbsoluteOutsideRoot),
-        }
-    } else {
-        candidate.to_path_buf()
-    };
     let mut normalized = PathBuf::new();
-    for component in relative.components() {
+    for component in Path::new(input).components() {
         match component {
             Component::ParentDir => return Err(Denied::ParentDirEscape),
-            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+            Component::CurDir | Component::Prefix(_) => {}
+            Component::RootDir => normalized.push(component.as_os_str()),
             Component::Normal(seg) => normalized.push(seg),
         }
     }
     Ok(normalized)
 }
 
-fn canonical_within(root: &Path, relative: &Path) -> Result<PathBuf, Denied> {
-    let joined = root.join(relative);
+fn canonical_within(root: &Path, raw: &Path) -> Result<PathBuf, Denied> {
+    let joined = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        root.join(raw)
+    };
     let mut probe = joined.clone();
     while fs::symlink_metadata(&probe).is_err() {
         match probe.parent() {
@@ -88,7 +84,11 @@ fn canonical_within(root: &Path, relative: &Path) -> Result<PathBuf, Denied> {
         canonical_probe.join(remainder)
     };
     if !target.starts_with(root) {
-        return Err(Denied::SymlinkEscape);
+        return Err(if raw.is_absolute() {
+            Denied::AbsoluteOutsideRoot
+        } else {
+            Denied::SymlinkEscape
+        });
     }
     Ok(target)
 }
@@ -112,43 +112,50 @@ mod tests {
 
     #[test]
     fn normalize_rejects_nul() {
-        let root = Path::new("/tmp");
-        assert!(matches!(
-            normalize_relative(root, "a\0b"),
-            Err(Denied::NulByte)
-        ));
+        assert!(matches!(normalize("a\0b"), Err(Denied::NulByte)));
     }
 
     #[test]
     fn normalize_rejects_parent_dir() {
-        let root = Path::new("/tmp");
+        assert!(matches!(normalize("../x"), Err(Denied::ParentDirEscape)));
         assert!(matches!(
-            normalize_relative(root, "../x"),
+            normalize("/etc/../x"),
             Err(Denied::ParentDirEscape)
         ));
     }
 
     #[test]
-    fn normalize_rejects_absolute_outside_root() {
-        let root = Path::new("/tmp/root");
+    fn normalize_keeps_absolute_verbatim() {
+        assert_eq!(normalize("/etc/passwd").unwrap(), Path::new("/etc/passwd"));
+    }
+
+    #[test]
+    fn normalize_collapses_curdir_and_double_slash() {
+        assert_eq!(normalize("./a//b/").unwrap(), Path::new("a/b"));
+    }
+
+    #[test]
+    fn canonical_within_rejects_absolute_outside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolver_root = fs::canonicalize(dir.path()).unwrap();
         assert!(matches!(
-            normalize_relative(root, "/etc/passwd"),
+            canonical_within(&resolver_root, Path::new("/etc/passwd")),
             Err(Denied::AbsoluteOutsideRoot)
         ));
     }
 
     #[test]
-    fn normalize_strips_absolute_inside_root() {
-        let root = Path::new("/tmp/root");
-        let rel = normalize_relative(root, "/tmp/root/a/b.txt").unwrap();
-        assert_eq!(rel, Path::new("a/b.txt"));
-    }
-
-    #[test]
-    fn normalize_collapses_curdir_and_double_slash() {
-        let root = Path::new("/tmp/root");
-        let rel = normalize_relative(root, "./a//b/").unwrap();
-        assert_eq!(rel, Path::new("a/b"));
+    fn canonical_within_accepts_absolute_via_symlinked_root() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("ok.txt"), b"ok").unwrap();
+        let link_parent = tempfile::tempdir().unwrap();
+        let link = link_parent.path().join("rootlink");
+        std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+        let resolver = Resolver::new(&link).unwrap();
+        let resolved = resolver
+            .resolve(link.join("ok.txt").to_str().unwrap())
+            .unwrap();
+        assert!(resolved.starts_with(resolver.root()));
     }
 
     #[test]

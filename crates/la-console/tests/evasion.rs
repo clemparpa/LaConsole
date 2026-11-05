@@ -9,11 +9,15 @@ fn root() -> tempfile::TempDir {
     dir
 }
 
+fn canonical_root(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    fs::canonicalize(dir.path()).unwrap()
+}
+
 #[test]
 fn allows_simple_relative_path() {
     let dir = root();
     let resolved = resolve(dir.path(), "sub/ok.txt").unwrap();
-    assert!(resolved.starts_with(dir.path()));
+    assert!(resolved.starts_with(canonical_root(&dir)));
     assert!(resolved.ends_with("sub/ok.txt"));
 }
 
@@ -44,7 +48,20 @@ fn allows_absolute_inside_root() {
     let dir = root();
     let abs = dir.path().join("sub/ok.txt");
     let resolved = resolve(dir.path(), abs.to_str().unwrap()).unwrap();
-    assert!(resolved.starts_with(dir.path()));
+    assert!(resolved.starts_with(canonical_root(&dir)));
+}
+
+#[test]
+fn allows_root_passed_via_symlink() {
+    let dir = root();
+    let link_parent = tempfile::tempdir().unwrap();
+    let link = link_parent.path().join("rootlink");
+    symlink(dir.path(), &link).unwrap();
+    let resolved = resolve(&link, "sub/ok.txt").unwrap();
+    assert!(resolved.starts_with(canonical_root(&dir)));
+    let abs = link.join("sub/ok.txt");
+    let resolved = resolve(&link, abs.to_str().unwrap()).unwrap();
+    assert!(resolved.starts_with(canonical_root(&dir)));
 }
 
 #[test]
