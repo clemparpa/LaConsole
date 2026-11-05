@@ -7,3 +7,8 @@ description = "Confined fake console driven by an AI agent over a line-by-line J
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

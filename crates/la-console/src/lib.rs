@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+pub mod console;
+
 #[cfg(test)]
 mod tests {
     #[test]
