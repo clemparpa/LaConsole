@@ -20,7 +20,7 @@ fn main() {
     }
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    if let Err(err) = la_console::console::run(stdin.lock(), stdout.lock()) {
+    if let Err(err) = la_console::console::run(&cli.root, stdin.lock(), stdout.lock()) {
         eprintln!("error: {err}");
         std::process::exit(1);
     }

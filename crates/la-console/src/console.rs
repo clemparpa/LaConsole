@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
+use std::path::Path;
+
+use crate::commands::{execute, Ctx, ExecError, DEFAULT_MAX_READ_BYTES};
+use crate::resolve::Resolver;
+use crate::sink::{DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_MAX_WRITE_BYTES};
 
 #[derive(Debug, Deserialize)]
 pub struct Request {
@@ -16,54 +22,68 @@ pub struct Response {
     pub truncated: bool,
 }
 
-pub fn run<R: BufRead, W: Write>(mut input: R, mut output: W) -> std::io::Result<()> {
+pub fn run<R: BufRead, W: Write>(root: &Path, mut input: R, mut output: W) -> std::io::Result<()> {
+    let resolver = Resolver::new(root)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
+    let sensibles: Vec<regex::Regex> = Vec::new();
+    let secrets: Vec<String> = Vec::new();
+    let ctx = Ctx {
+        resolver: &resolver,
+        sensibles: &sensibles,
+        secrets: &secrets,
+        max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
+        max_read_bytes: DEFAULT_MAX_READ_BYTES,
+        max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+    };
     let mut line = String::new();
     loop {
         line.clear();
         if input.read_line(&mut line)? == 0 {
             return Ok(());
         }
-        let response = handle_line(&line);
+        let response = handle_line(&line, &ctx);
         serde_json::to_writer(&mut output, &response)?;
         output.write_all(b"\n")?;
         output.flush()?;
     }
 }
 
-fn handle_line(line: &str) -> Response {
+fn denied(message: String) -> Response {
+    Response {
+        ok: false,
+        code: 2,
+        stdout: String::new(),
+        stderr: format!("denied: {message}"),
+        truncated: false,
+    }
+}
+
+fn handle_line(line: &str, ctx: &Ctx) -> Response {
     match serde_json::from_str::<Request>(line) {
         Ok(req) if req.op == "exec" => {
-            let vars = std::collections::HashMap::new();
+            let vars = HashMap::new();
             match crate::parse::parse_input(&req.cmd, &vars) {
-                Err(err) => Response {
-                    ok: false,
-                    code: 2,
-                    stdout: String::new(),
-                    stderr: format!("denied: {err}"),
-                    truncated: false,
-                },
-                Ok(_) => Response {
-                    ok: false,
-                    code: 2,
-                    stdout: String::new(),
-                    stderr: format!("denied: no command available yet: {}", req.cmd),
-                    truncated: false,
+                Err(err) => denied(err.to_string()),
+                Ok(node) => match execute(&node, ctx) {
+                    Ok(outcome) => Response {
+                        ok: outcome.code == 0,
+                        code: outcome.code,
+                        stdout: outcome.stdout,
+                        stderr: outcome.stderr,
+                        truncated: outcome.truncated,
+                    },
+                    Err(ExecError::Denied(message)) => denied(message),
+                    Err(ExecError::Fail(message)) => Response {
+                        ok: false,
+                        code: 1,
+                        stdout: String::new(),
+                        stderr: message,
+                        truncated: false,
+                    },
                 },
             }
         }
-        Ok(_) => Response {
-            ok: false,
-            code: 2,
-            stdout: String::new(),
-            stderr: "denied: unknown op".to_string(),
-            truncated: false,
-        },
-        Err(_) => Response {
-            ok: false,
-            code: 2,
-            stdout: String::new(),
-            stderr: "denied: invalid JSON request".to_string(),
-            truncated: false,
-        },
+        Ok(_) => denied("unknown op".to_string()),
+        Err(_) => denied("invalid JSON request".to_string()),
     }
 }
