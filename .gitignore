@@ -1,0 +1,8 @@
+# Build artifacts
+/target/
+
+# cargo mutants output
+mutants.out/
+
+# OS / editor
+.DS_Store
