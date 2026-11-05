@@ -23,6 +23,12 @@ la-console --root <chemin>
 
 La console est stateless : chaque commande repart du `root`.
 
+## Commandes disponibles
+
+Whitelist v1 en cours de déploiement (une commande par PR, voir
+[ROADMAP.md](../ROADMAP.md)) : `cat <path...>` et `ls [path] [--all]` sont
+disponibles. Toute autre commande est refusée (`denied: unknown command`, code 2).
+
 ## Documents de référence
 
 - [spec/](../spec/README.md) — spécification complète : protocole, architecture, commandes, sécurité, stratégie de test, structure du dépôt ;

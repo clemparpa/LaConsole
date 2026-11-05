@@ -14,7 +14,7 @@ fn e2e_json_line_protocol() {
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
 
-    writeln!(stdin, r#"{{"op": "exec", "cmd": "ls src"}}"#).unwrap();
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "rm -rf /"}}"#).unwrap();
     writeln!(stdin, "ceci n'est pas du JSON").unwrap();
     stdin.flush().unwrap();
 

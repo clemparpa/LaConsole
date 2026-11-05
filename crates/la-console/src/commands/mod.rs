@@ -1,10 +1,12 @@
 pub mod cat;
+pub mod ls;
 
 use crate::parse::{Node, Redirect, SimpleCommand};
 use crate::resolve::Resolver;
 use crate::sink::{sensitive_match, CallerSink, FileSink, PipeSink, Sink, SinkError};
 
 pub const DEFAULT_MAX_READ_BYTES: usize = 1024 * 1024;
+pub const DEFAULT_MAX_LS_ENTRIES: usize = 10_000;
 
 pub struct Ctx<'a> {
     pub resolver: &'a Resolver,
@@ -83,9 +85,11 @@ fn exec_simple(
     final_output: bool,
 ) -> Result<SimpleResult, ExecError> {
     let name = cmd.argv[0].text.as_str();
-    if name != "cat" {
-        return Err(ExecError::Denied(format!("unknown command: {name}")));
-    }
+    let raw = match name {
+        "cat" => cat::run(cmd, ctx)?,
+        "ls" => ls::run(cmd, ctx)?,
+        _ => return Err(ExecError::Denied(format!("unknown command: {name}"))),
+    };
 
     let mut out_file: Option<FileSink> = None;
     let mut err_file: Option<FileSink> = None;
@@ -106,8 +110,6 @@ fn exec_simple(
             Redirect::ErrToOut => err_to_out = true,
         }
     }
-
-    let raw = cat::run(cmd, ctx)?;
 
     let mut truncated = false;
     let mut pipe_data = Vec::new();

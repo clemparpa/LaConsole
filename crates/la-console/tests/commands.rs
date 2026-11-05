@@ -116,3 +116,55 @@ fn e2e_redirect_roundtrip_through_file_sink() {
     assert_eq!(resp["ok"], true);
     assert_eq!(resp["stdout"], "payload\n");
 }
+
+#[test]
+fn e2e_ls_lists_root_and_subdir() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("b.txt"), "").unwrap();
+    std::fs::write(dir.path().join("a.txt"), "").unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/x.rs"), "").unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("ls");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(resp["stdout"], "a.txt\nb.txt\nsrc\n");
+    let resp = session.send("ls src");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "x.rs\n");
+}
+
+#[test]
+fn e2e_ls_all_lists_hidden_and_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("keep.txt"), "").unwrap();
+    std::fs::write(dir.path().join(".hidden"), "").unwrap();
+    std::fs::write(dir.path().join("target.log"), "").unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "target.log\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("ls");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "keep.txt\n");
+    let resp = session.send("ls --all");
+    assert_eq!(resp["ok"], true);
+    let stdout = resp["stdout"].as_str().unwrap();
+    assert!(stdout.contains(".hidden"));
+    assert!(stdout.contains("target.log"));
+    assert!(stdout.contains("keep.txt"));
+}
+
+#[test]
+fn e2e_ls_denies_escape_and_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("ls ..");
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert!(resp["stderr"].as_str().unwrap().starts_with("denied:"));
+    let resp = session.send("ls /etc");
+    assert_eq!(resp["code"], 2);
+    let resp = session.send("ls nope");
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 1);
+    assert!(resp["stderr"].as_str().unwrap().contains("nope"));
+}
