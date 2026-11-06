@@ -50,7 +50,7 @@ la-console/
 | `ls` (respecte .gitignore, bornes) | `ignore` (walker ripgrep) |
 | Checksum sha256 des commandes trusted | `sha2` |
 | Regex des fichiers sensibles | `regex` (temps linéaire, pas de ReDoS) |
-| Limites mémoire/CPU du sous-processus | `rlimit` |
+| Limites mémoire/CPU/fichier du sous-processus trusted | `ulimit` appliqué par le shell lancé (pas de crate, pas d'`unsafe`) |
 | Logs structurés | `tracing`, `tracing-subscriber` |
 | Erreurs typées | `thiserror` |
 | CLI | `clap` |

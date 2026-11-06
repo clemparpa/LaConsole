@@ -62,6 +62,7 @@ pub struct Ctx {
     pub sensibles: Vec<regex::Regex>,
     pub secrets: Vec<String>,
     pub limits: Limits,
+    pub trusted: Option<crate::trusted::TrustedRegistry>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -230,6 +231,7 @@ fn dispatch(
         "http" => http::run(cmd, ctx, quota),
         "ls" => ls::run(cmd, ctx, quota),
         "sub" => sub::run(cmd, ctx, quota),
+        "trusted" => crate::trusted::run(cmd, ctx, quota),
         _ => Err(ExecError::Denied(format!("unknown command: {name}"))),
     }
 }
@@ -399,6 +401,7 @@ mod tests {
                 max_read_bytes,
                 ..Limits::default()
             },
+            trusted: None,
         }
     }
 
@@ -549,6 +552,7 @@ mod bound_tests {
             sensibles: vec![],
             secrets: vec![],
             limits,
+            trusted: None,
         }
     }
 
@@ -668,6 +672,7 @@ mod helper_tests {
             sensibles,
             secrets,
             limits,
+            trusted: None,
         }
     }
 

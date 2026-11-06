@@ -43,6 +43,7 @@ mod tests {
                 max_write_bytes,
                 ..Limits::default()
             },
+            trusted: None,
         }
     }
 
@@ -232,11 +233,11 @@ mod tests {
     }
 
     #[test]
-    fn trusted_is_still_denied() {
+    fn trusted_is_denied_without_registry() {
         let dir = tempfile::tempdir().unwrap();
         let err = run_cmd(&dir, "trusted build").unwrap_err();
         assert!(
-            matches!(err, ExecError::Denied(m) if m.contains("unknown command") && m.contains("trusted"))
+            matches!(err, ExecError::Denied(m) if m.contains("not configured") && m.contains("trusted"))
         );
     }
 }

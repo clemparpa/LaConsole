@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::commands::{execute, Ctx, ExecError, Limits};
 use crate::resolve::Resolver;
+use crate::trusted::TrustedRegistry;
 
 #[derive(Debug, Deserialize)]
 pub struct Request {
@@ -21,22 +22,53 @@ pub struct Response {
     pub truncated: bool,
 }
 
+pub struct Options {
+    pub timeout_secs: u64,
+    pub trusted_file: Option<PathBuf>,
+    pub trusted_sha256: Option<String>,
+    pub sensibles_file: Option<PathBuf>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            timeout_secs: crate::commands::DEFAULT_COMMAND_TIMEOUT_SECS,
+            trusted_file: None,
+            trusted_sha256: None,
+            sensibles_file: None,
+        }
+    }
+}
+
 pub fn run<R: BufRead, W: Write>(
     root: &Path,
-    timeout_secs: u64,
+    opts: &Options,
     mut input: R,
     mut output: W,
 ) -> std::io::Result<()> {
     let resolver = Resolver::new(root)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
+    let sensibles = match &opts.sensibles_file {
+        Some(path) => crate::sink::load_sensibles(path)?,
+        None => Vec::new(),
+    };
+    let trusted = match &opts.trusted_file {
+        Some(path) => Some(
+            TrustedRegistry::load(path, opts.trusted_sha256.clone(), resolver.root()).map_err(
+                |err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()),
+            )?,
+        ),
+        None => None,
+    };
     let ctx = Ctx {
         resolver,
-        sensibles: Vec::new(),
+        sensibles,
         secrets: Vec::new(),
         limits: Limits {
-            command_timeout_secs: timeout_secs,
+            command_timeout_secs: opts.timeout_secs,
             ..Limits::default()
         },
+        trusted,
     };
     let mut line = String::new();
     loop {

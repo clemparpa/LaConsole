@@ -14,7 +14,7 @@ et la console répond en JSON, une ligne par réponse sur stdout.
 ## Lancement et protocole
 
 ```
-la-console --root <chemin>
+la-console --root <chemin> [--timeout-secs N] [--trusted-file <chemin> --trusted-sha256 <hex>] [--sensitives-file <chemin>]
 ```
 
 - Entrée : `{"op": "exec", "cmd": "ls src"}`
@@ -25,12 +25,20 @@ La console est stateless : chaque commande repart du `root`.
 
 ## Commandes disponibles
 
-Whitelist v1 en cours de déploiement (voir [ROADMAP.md](../ROADMAP.md)) :
+Whitelist v1 (voir [ROADMAP.md](../ROADMAP.md)) :
 `cat <path...>`, `ls [path] [--all]`, `echo <text> [> path]`,
 `grep <pattern> <path...> [--all]`, `sub <pattern> <repl> <path...>` et
 `http <METHOD> <url> [--data b] [--header k:v]` (v1 : `localhost` uniquement)
 sont disponibles. Toute autre commande est refusée (`denied: unknown command`,
 code 2).
+
+`trusted <nom> [args...]` exécute une commande définie par l'humain dans
+`--trusted-file` (ex. `trusted.txt`, revu en PR), uniquement si le sha256 du
+fichier correspond à `--trusted-sha256` (re-vérifié avant chaque exécution).
+L'exécution se fait dans un shell réduit : `cwd = root`, environnement minimal
+(`HOME` hors du root), stdin fermé, limites `ulimit` sur le sous-processus,
+jamais dans un pipe. Les arguments de chemin passent par `resolve()` +
+fichiers sensibles, sauf flag `--no-path-check` déclaré dans `trusted.txt`.
 
 ## Documents de référence
 

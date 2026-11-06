@@ -5,6 +5,7 @@ pub mod console;
 pub mod parse;
 pub mod resolve;
 pub mod sink;
+pub mod trusted;
 
 #[cfg(test)]
 mod tests {

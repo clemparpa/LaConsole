@@ -48,9 +48,10 @@
 - Bornes générales par commande (cette PR) : `Limits` centralise toutes les bornes ; **timeout** par commande (`run_with_timeout` : thread + `recv_timeout`, défaut 30 s, CLI `--timeout-secs`) et **quota disque par commande** (`DiskQuota` partagé entre tous les `FileSink` d'une commande, défaut 16 MiO) → `denied` code 2.
 - **Testable** : tests unitaires + e2e par commande.
 
-## Étape 6 — Commandes trusted
+## Étape 6 — Commandes trusted ✅ (cette PR)
 
 - `trusted.rs` + `trusted.txt` (dans le dépôt de l'agent) : parsing, checksum sha256, scan des changements, exécution shell réduit (`cwd = root`, env minimal).
+- ✅ `trusted.rs` : parsing strict de `trusted.txt` (`<nom> [--no-path-check] = <commande>`), vérification sha256 du fichier **avant chaque exécution** (`--trusted-sha256`), exécution via `/bin/sh -c` avec `cwd = root`, env réduit (`PATH`, `LANG`, `HOME` hors du root), stdin `null`, args passés en `"$@"` (jamais réinterprétés) ; args de chemin validés via `resolve()` + sensibles sauf `--no-path-check` ; limites du sous-processus via `ulimit` appliqué par le shell (`-v` 1 GiO, `-t` timeout+5 s, `-f` quota disque), timeout avec `kill()` du fils. CLI : `--trusted-file`, `--trusted-sha256`, `--sensitives-file`.
 - **Testable** : e2e avec un fichier trusted de test.
 
 ## Étape 7 — Nightly (fuzz long + mutation testing)
