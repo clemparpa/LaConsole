@@ -3,9 +3,8 @@ use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::Path;
 
-use crate::commands::{execute, Ctx, ExecError, DEFAULT_MAX_READ_BYTES};
+use crate::commands::{execute, Ctx, ExecError, Limits};
 use crate::resolve::Resolver;
-use crate::sink::{DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_MAX_WRITE_BYTES};
 
 #[derive(Debug, Deserialize)]
 pub struct Request {
@@ -22,18 +21,22 @@ pub struct Response {
     pub truncated: bool,
 }
 
-pub fn run<R: BufRead, W: Write>(root: &Path, mut input: R, mut output: W) -> std::io::Result<()> {
+pub fn run<R: BufRead, W: Write>(
+    root: &Path,
+    timeout_secs: u64,
+    mut input: R,
+    mut output: W,
+) -> std::io::Result<()> {
     let resolver = Resolver::new(root)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
-    let sensibles: Vec<regex::Regex> = Vec::new();
-    let secrets: Vec<String> = Vec::new();
     let ctx = Ctx {
-        resolver: &resolver,
-        sensibles: &sensibles,
-        secrets: &secrets,
-        max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-        max_read_bytes: DEFAULT_MAX_READ_BYTES,
-        max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+        resolver,
+        sensibles: Vec::new(),
+        secrets: Vec::new(),
+        limits: Limits {
+            command_timeout_secs: timeout_secs,
+            ..Limits::default()
+        },
     };
     let mut line = String::new();
     loop {

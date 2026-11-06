@@ -116,3 +116,159 @@ fn e2e_redirect_roundtrip_through_file_sink() {
     assert_eq!(resp["ok"], true);
     assert_eq!(resp["stdout"], "payload\n");
 }
+
+#[test]
+fn e2e_ls_lists_root_and_subdir() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("b.txt"), "").unwrap();
+    std::fs::write(dir.path().join("a.txt"), "").unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/x.rs"), "").unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("ls");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(resp["stdout"], "a.txt\nb.txt\nsrc\n");
+    let resp = session.send("ls src");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "x.rs\n");
+}
+
+#[test]
+fn e2e_ls_all_lists_hidden_and_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("keep.txt"), "").unwrap();
+    std::fs::write(dir.path().join(".hidden"), "").unwrap();
+    std::fs::write(dir.path().join("target.log"), "").unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "target.log\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("ls");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "keep.txt\n");
+    let resp = session.send("ls --all");
+    assert_eq!(resp["ok"], true);
+    let stdout = resp["stdout"].as_str().unwrap();
+    assert!(stdout.contains(".hidden"));
+    assert!(stdout.contains("target.log"));
+    assert!(stdout.contains("keep.txt"));
+}
+
+#[test]
+fn e2e_ls_denies_escape_and_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("ls ..");
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert!(resp["stderr"].as_str().unwrap().starts_with("denied:"));
+    let resp = session.send("ls /etc");
+    assert_eq!(resp["code"], 2);
+    let resp = session.send("ls nope");
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 1);
+    assert!(resp["stderr"].as_str().unwrap().contains("nope"));
+}
+
+#[test]
+fn e2e_echo_prints_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("echo hello la-console");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(resp["stdout"], "hello la-console\n");
+    let resp = session.send("echo *.txt");
+    assert_eq!(resp["stdout"], "*.txt\n");
+}
+
+#[test]
+fn e2e_echo_redirect_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("echo payload > out.txt");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "");
+    let resp = session.send("cat out.txt");
+    assert_eq!(resp["stdout"], "payload\n");
+    let resp = session.send("echo more >> out.txt");
+    assert_eq!(resp["ok"], true);
+    let resp = session.send("cat out.txt");
+    assert_eq!(resp["stdout"], "payload\nmore\n");
+}
+
+#[test]
+fn e2e_echo_redirect_escape_is_denied() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("echo x > ../evil.txt");
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert!(resp["stderr"].as_str().unwrap().starts_with("denied:"));
+    assert!(!dir.path().parent().unwrap().join("evil.txt").exists());
+}
+
+#[test]
+fn e2e_grep_finds_matches_and_denies_escape() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "foo one\nbar\nfoo two\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("grep foo a.txt");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "a.txt:1:foo one\na.txt:3:foo two\n");
+    let resp = session.send("grep zzz a.txt");
+    assert_eq!(resp["code"], 1);
+    let resp = session.send("grep foo ../outside.txt");
+    assert_eq!(resp["code"], 2);
+    assert!(resp["stderr"].as_str().unwrap().starts_with("denied:"));
+}
+
+#[test]
+fn e2e_sub_rewrites_then_cat_reads_back() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "hello world\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send(r#"sub "h.llo" "bye" a.txt"#);
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    let resp = session.send("cat a.txt");
+    assert_eq!(resp["stdout"], "bye world\n");
+    let resp = session.send("sub a b ../evil.txt");
+    assert_eq!(resp["code"], 2);
+}
+
+#[test]
+fn e2e_http_localhost_only() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nping")
+                .unwrap();
+            stream.flush().unwrap();
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send(&format!("http GET http://127.0.0.1:{port}/"));
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(resp["stdout"], "ping");
+    let resp = session.send("http GET http://169.254.169.254/latest/meta-data");
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert!(resp["stderr"].as_str().unwrap().starts_with("denied:"));
+    let resp = session.send("http GET http://example.com/");
+    assert_eq!(resp["code"], 2);
+}

@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::resolve::{Denied, Resolver};
 
@@ -17,8 +19,51 @@ pub enum SinkError {
     Sensitive(String),
     #[error("write bound exceeded: {0} bytes max")]
     WriteBoundExceeded(usize),
+    #[error("disk quota exceeded: {0} bytes max per command")]
+    QuotaExceeded(u64),
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// Per-command disk write quota, shared through `Arc` between every sink a
+/// command opens (redirects + in-place rewrites like `sub`).
+pub struct DiskQuota {
+    max: u64,
+    used: AtomicU64,
+}
+
+impl DiskQuota {
+    pub fn new(max: u64) -> Self {
+        Self {
+            max,
+            used: AtomicU64::new(0),
+        }
+    }
+
+    pub fn try_consume(&self, n: u64) -> Result<(), u64> {
+        let mut current = self.used.load(Ordering::Relaxed);
+        loop {
+            let Some(next) = current.checked_add(n) else {
+                return Err(self.max);
+            };
+            if next > self.max {
+                return Err(self.max);
+            }
+            match self.used.compare_exchange_weak(
+                current,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    pub fn used(&self) -> u64 {
+        self.used.load(Ordering::Relaxed)
+    }
 }
 
 pub trait Sink {
@@ -149,6 +194,7 @@ pub struct FileSink {
     masker: SecretMasker,
     written: usize,
     max_write_bytes: usize,
+    quota: Option<Arc<DiskQuota>>,
 }
 
 impl FileSink {
@@ -159,6 +205,7 @@ impl FileSink {
         sensibles: &[regex::Regex],
         secrets: &[String],
         max_write_bytes: usize,
+        quota: Option<Arc<DiskQuota>>,
     ) -> Result<Self, SinkError> {
         let target = resolver.resolve(rel_path)?;
         let rel = target
@@ -184,6 +231,7 @@ impl FileSink {
             masker: SecretMasker::new(secrets),
             written: 0,
             max_write_bytes,
+            quota,
         })
     }
 
@@ -198,6 +246,11 @@ impl Sink for FileSink {
         if self.written + masked.len() > self.max_write_bytes {
             return Err(SinkError::WriteBoundExceeded(self.max_write_bytes));
         }
+        if let Some(quota) = &self.quota {
+            quota
+                .try_consume(masked.len() as u64)
+                .map_err(SinkError::QuotaExceeded)?;
+        }
         self.file.write_all(&masked)?;
         self.written += masked.len();
         Ok(bytes.len())
@@ -210,6 +263,11 @@ impl FileSink {
         if !pending.is_empty() {
             if self.written + pending.len() > self.max_write_bytes {
                 return Err(SinkError::WriteBoundExceeded(self.max_write_bytes));
+            }
+            if let Some(quota) = &self.quota {
+                quota
+                    .try_consume(pending.len() as u64)
+                    .map_err(SinkError::QuotaExceeded)?;
             }
             self.file.write_all(&pending)?;
             self.written += pending.len();
@@ -323,7 +381,7 @@ mod tests {
     fn file_sink_denies_escape_before_creating_anything() {
         let dir = tempfile::tempdir().unwrap();
         let r = resolver(&dir);
-        let err = FileSink::create(&r, "../evil.txt", false, &[], &[], 1024)
+        let err = FileSink::create(&r, "../evil.txt", false, &[], &[], 1024, None)
             .err()
             .unwrap();
         assert!(matches!(err, SinkError::Denied(_)));
@@ -336,7 +394,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let r = resolver(&dir);
         let sensibles = vec![regex::Regex::new(r".*\.env$").unwrap()];
-        let err = FileSink::create(&r, ".env", false, &sensibles, &[], 1024)
+        let err = FileSink::create(&r, ".env", false, &sensibles, &[], 1024, None)
             .err()
             .unwrap();
         assert!(matches!(err, SinkError::Sensitive(_)));
@@ -348,7 +406,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let r = resolver(&dir);
         let s = secrets(&["tok-abc123"]);
-        let mut sink = FileSink::create(&r, "out.txt", false, &[], &s, 1024).unwrap();
+        let mut sink = FileSink::create(&r, "out.txt", false, &[], &s, 1024, None).unwrap();
         sink.write(b"token=tok-abc123\n").unwrap();
         sink.finish().unwrap();
         let content = fs::read_to_string(dir.path().join("out.txt")).unwrap();
@@ -361,7 +419,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let r = resolver(&dir);
         let s = secrets(&["tok-abc123"]);
-        let mut sink = FileSink::create(&r, "out.txt", false, &[], &s, 1024).unwrap();
+        let mut sink = FileSink::create(&r, "out.txt", false, &[], &s, 1024, None).unwrap();
         sink.write(b"tok-ab").unwrap();
         sink.write(b"c123!").unwrap();
         sink.finish().unwrap();
@@ -373,7 +431,7 @@ mod tests {
     fn file_sink_enforces_write_bound() {
         let dir = tempfile::tempdir().unwrap();
         let r = resolver(&dir);
-        let mut sink = FileSink::create(&r, "out.txt", false, &[], &[], 5).unwrap();
+        let mut sink = FileSink::create(&r, "out.txt", false, &[], &[], 5, None).unwrap();
         assert_eq!(sink.write(b"abc").unwrap(), 3);
         assert!(matches!(
             sink.write(b"def"),
@@ -388,7 +446,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let r = resolver(&dir);
         fs::write(dir.path().join("log.txt"), b"one\n").unwrap();
-        let mut sink = FileSink::create(&r, "log.txt", true, &[], &[], 1024).unwrap();
+        let mut sink = FileSink::create(&r, "log.txt", true, &[], &[], 1024, None).unwrap();
         sink.write(b"two\n").unwrap();
         sink.finish().unwrap();
         assert_eq!(
@@ -402,7 +460,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let r = resolver(&dir);
         fs::write(dir.path().join("log.txt"), b"old-content").unwrap();
-        let mut sink = FileSink::create(&r, "log.txt", false, &[], &[], 1024).unwrap();
+        let mut sink = FileSink::create(&r, "log.txt", false, &[], &[], 1024, None).unwrap();
         sink.write(b"new").unwrap();
         sink.finish().unwrap();
         assert_eq!(
@@ -472,5 +530,29 @@ mod tests {
             Some("cfg/.env".to_string())
         );
         assert_eq!(sensitive_match(&re, &root, &root.join("ok.txt")), None);
+    }
+
+    #[test]
+    fn file_sink_enforces_shared_disk_quota() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = resolver(&dir);
+        let quota = std::sync::Arc::new(DiskQuota::new(5));
+        let mut a =
+            FileSink::create(&r, "a.txt", false, &[], &[], 1024, Some(quota.clone())).unwrap();
+        let mut b =
+            FileSink::create(&r, "b.txt", false, &[], &[], 1024, Some(quota.clone())).unwrap();
+        a.write(b"abc").unwrap();
+        b.write(b"de").unwrap();
+        assert!(matches!(b.write(b"f"), Err(SinkError::QuotaExceeded(5))));
+        assert_eq!(quota.used(), 5);
+    }
+
+    #[test]
+    fn disk_quota_counts_across_sinks() {
+        let quota = DiskQuota::new(10);
+        assert!(quota.try_consume(6).is_ok());
+        assert!(quota.try_consume(4).is_ok());
+        assert!(quota.try_consume(1).is_err());
+        assert_eq!(quota.used(), 10);
     }
 }
