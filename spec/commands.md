@@ -37,6 +37,12 @@ sensibles**, même après expansion de glob ou substitution de variable.
 - Définies par l'humain dans un fichier dédié du dépôt où tourne l'agent (ex.
   `trusted.txt`), que l'agent ne peut pas modifier (revu en PR, protégé par
   review humaine).
+- **Format de `trusted.txt`** : une entrée par ligne,
+  `<nom> [--no-path-check] = <commande shell>` ; lignes vides et `#` commentaires
+  ignorés ; `<nom>` doit matcher `^[A-Za-z_][A-Za-z0-9_-]*$` ; `--no-path-check`
+  est le seul flag autorisé en v1 ; nom dupliqué ou ligne mal formée = refus
+  total (fail-closed). La console complète la commande avec `"$@"` : les
+  arguments de l'agent sont passés tels quels, jamais réinterprétés.
 - Invoquées par l'agent via `trusted <nom>` ; la console ne parse pas le
   contenu, elle le passe tel quel à un vrai shell avec `cwd = root` et un
   environnement réduit (variables d'env minimales, `HOME` pointé hors du root).
@@ -49,4 +55,8 @@ sensibles**, même après expansion de glob ou substitution de variable.
   2. **scan des changements** depuis la dernière exécution validée (diff du
      fichier + du code de test associé) pour détecter du code adversarial ;
   3. exécution uniquement si checksum attendu == checksum constaté et scan OK.
-- Timeout par commande, `rlimit` sur le sous-processus.
+- Timeout par commande (kill du sous-processus), limites du sous-processus via
+  `ulimit` appliqué par le shell lui-même (`-v` mémoire 1 GiO, `-t` CPU,
+  `-f` taille de fichier = quota disque) : les limites ne touchent que le
+  sous-processus, jamais le processus console (pas de `setrlimit` global, donc
+  pas besoin de `unsafe`/`pre_exec`).

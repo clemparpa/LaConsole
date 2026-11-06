@@ -218,6 +218,7 @@ mod tests {
             sensibles: vec![],
             secrets: vec![],
             limits: Limits::default(),
+            trusted: None,
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
@@ -289,6 +290,7 @@ mod tests {
             sensibles,
             secrets: vec![],
             limits: Limits::default(),
+            trusted: None,
         };
         let node = parse_input("grep SECRET .env", &HashMap::new()).unwrap();
         assert!(matches!(
@@ -310,6 +312,7 @@ mod tests {
                 max_read_bytes: 1024,
                 ..Limits::default()
             },
+            trusted: None,
         };
         let node = parse_input("grep a big.txt", &HashMap::new()).unwrap();
         assert!(matches!(

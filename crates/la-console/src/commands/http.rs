@@ -190,6 +190,7 @@ mod tests {
             sensibles: vec![],
             secrets: vec![],
             limits: Limits::default(),
+            trusted: None,
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)

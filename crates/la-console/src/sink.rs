@@ -340,6 +340,27 @@ pub fn sensitive_match(sensibles: &[regex::Regex], root: &Path, target: &Path) -
         .map(|_| rel_str.into_owned())
 }
 
+/// Loads the sensitive-file patterns: one regex per line, `#` comments and
+/// blank lines ignored. Fail-closed: an invalid regex aborts the load.
+pub fn load_sensibles(path: &Path) -> std::io::Result<Vec<regex::Regex>> {
+    let content = std::fs::read_to_string(path)?;
+    let mut patterns = Vec::new();
+    for (idx, raw) in content.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let regex = regex::Regex::new(line).map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid sensitive pattern at line {}: {err}", idx + 1),
+            )
+        })?;
+        patterns.push(regex);
+    }
+    Ok(patterns)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
