@@ -54,7 +54,7 @@
 - ✅ `trusted.rs` : parsing strict de `trusted.txt` (`<nom> [--no-path-check] = <commande>`), vérification sha256 du fichier **avant chaque exécution** (`--trusted-sha256`), exécution via `/bin/sh -c` avec `cwd = root`, env réduit (`PATH`, `LANG`, `HOME` hors du root), stdin `null`, args passés en `"$@"` (jamais réinterprétés) ; args de chemin validés via `resolve()` + sensibles sauf `--no-path-check` ; limites du sous-processus via `ulimit` appliqué par le shell (`-v` 1 GiO, `-t` timeout+5 s, `-f` quota disque), timeout avec `kill()` du fils. CLI : `--trusted-file`, `--trusted-sha256`, `--sensitives-file`.
 - **Testable** : e2e avec un fichier trusted de test.
 
-## Étape 7 — Nightly (fuzz long + mutation testing)
+## Étape 7 — Nightly (fuzz long + mutation testing) ✅ (cette PR)
 
-- Workflow nightly : fuzz 30 min+ sur parser + `resolve()`, `cargo mutants` avec seuil.
+- Workflow nightly (`.github/workflows/nightly.yml`, cron quotidien + `workflow_dispatch`) : fuzz 30 min sur `parse_input` + `resolve_path` (matrice, toolchain nightly), `cargo mutants` sur `resolve.rs` + `parse.rs` avec seuil `--minimum-mutant-score 80`.
 - **Testable** : le job nightly tourne vert sur `main`.
