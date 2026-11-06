@@ -56,5 +56,5 @@
 
 ## Étape 7 — Nightly (fuzz long + mutation testing) ✅ (cette PR)
 
-- Workflow nightly (`.github/workflows/nightly.yml`, cron quotidien + `workflow_dispatch`) : fuzz 30 min sur `parse_input` + `resolve_path` (matrice, toolchain nightly), `cargo mutants` sur `resolve.rs` + `parse.rs` avec seuil `--minimum-mutant-score 80`.
+- Workflow nightly (`.github/workflows/nightly.yml`, cron quotidien + `workflow_dispatch`) : fuzz 30 min sur `parse_input` + `resolve_path` (matrice, toolchain nightly, cible `x86_64-unknown-linux-gnu` car ASan est incompatible avec musl statique), `cargo mutants` sur `resolve.rs` + `parse.rs` avec seuil de score ≥ 80 % vérifié via `mutants.out/outcomes.json`.
 - **Testable** : le job nightly tourne vert sur `main`.
