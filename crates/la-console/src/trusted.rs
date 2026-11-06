@@ -240,16 +240,15 @@ fn exec_trusted(
     // rlimits are applied by the shell itself (ulimit), so they constrain only
     // the trusted sub-process and its children — never this console process.
     // `ulimit -f` is in 512-byte blocks (POSIX), the most conservative unit.
+    // `ulimit -v` (RLIMIT_AS) does not exist on macOS/BSD: best-effort (`;` +
+    // stderr silenced); `-t` and `-f` stay fail-closed (`&&`).
     let mem_kib = MEM_LIMIT_BYTES / 1024;
     let cpu_secs = ctx
         .limits
         .command_timeout_secs
         .saturating_add(CPU_GRACE_SECS);
     let fsize_blocks = ctx.limits.max_command_write_bytes / 512;
-    let script = format!(
-        "ulimit -v {mem_kib} && ulimit -t {cpu_secs} && ulimit -f {fsize_blocks} && {} \"$@\"",
-        entry.command
-    );
+    let script = build_script(&entry.command, mem_kib, cpu_secs, fsize_blocks);
     let mut command = Command::new(SHELL);
     command
         .arg("-c")
@@ -265,6 +264,12 @@ fn exec_trusted(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     run_child(command, ctx.limits.command_timeout_secs)
+}
+
+fn build_script(command: &str, mem_kib: u64, cpu_secs: u64, fsize_blocks: u64) -> String {
+    format!(
+        "ulimit -v {mem_kib} 2>/dev/null; ulimit -t {cpu_secs} && ulimit -f {fsize_blocks} && {command} \"$@\""
+    )
 }
 
 fn run_child(mut command: Command, timeout_secs: u64) -> Result<RawOutput, ExecError> {
@@ -571,6 +576,16 @@ mod tests {
         let err = run_cmd(&ctx, "trusted slow").unwrap_err();
         assert!(matches!(err, ExecError::Denied(m) if m.contains("timed out")));
         assert!(start.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn script_keeps_going_when_address_space_limit_is_unsupported() {
+        // Regression guard for macOS/BSD, where `ulimit -v` (RLIMIT_AS) does
+        // not exist: it must be best-effort (`;`) while -t/-f stay fail-closed.
+        let script = build_script("echo hi", 1048576, 35, 32768);
+        let v_part = script.split("; ").next().unwrap();
+        assert!(v_part.starts_with("ulimit -v 1048576 2>/dev/null"));
+        assert!(script.contains("ulimit -t 35 && ulimit -f 32768 && echo hi \"$@\""));
     }
 
     #[test]

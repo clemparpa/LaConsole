@@ -56,7 +56,8 @@ sensibles**, même après expansion de glob ou substitution de variable.
      fichier + du code de test associé) pour détecter du code adversarial ;
   3. exécution uniquement si checksum attendu == checksum constaté et scan OK.
 - Timeout par commande (kill du sous-processus), limites du sous-processus via
-  `ulimit` appliqué par le shell lui-même (`-v` mémoire 1 GiO, `-t` CPU,
-  `-f` taille de fichier = quota disque) : les limites ne touchent que le
+  `ulimit` appliqué par le shell lui-même (`-t` CPU, `-f` taille de fichier =
+  quota disque, toutes deux fail-closed ; `-v` mémoire 1 GiO en best-effort car
+  RLIMIT_AS n'existe pas sur macOS/BSD) : les limites ne touchent que le
   sous-processus, jamais le processus console (pas de `setrlimit` global, donc
   pas besoin de `unsafe`/`pre_exec`).
