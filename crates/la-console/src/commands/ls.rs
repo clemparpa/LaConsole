@@ -34,6 +34,7 @@ pub(crate) fn run(
         match list_one(ctx, path, all, &mut stdout) {
             Ok(()) => {}
             Err(ExecError::Denied(msg)) => return Err(ExecError::Denied(msg)),
+            Err(ExecError::Limit(msg)) => return Err(ExecError::Limit(msg)),
             Err(ExecError::Fail(msg)) => {
                 code = 1;
                 stderr.extend_from_slice(format!("ls: {msg}\n").as_bytes());
@@ -87,7 +88,7 @@ fn list_one(ctx: &Ctx, rel: &str, all: bool, out: &mut Vec<u8>) -> Result<(), Ex
         }
         names.push(name.to_string());
         if names.len() > ctx.limits.max_ls_entries {
-            return Err(ExecError::Denied(format!(
+            return Err(ExecError::Limit(format!(
                 "ls: too many entries (max {})",
                 ctx.limits.max_ls_entries
             )));

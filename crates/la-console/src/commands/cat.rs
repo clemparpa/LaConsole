@@ -20,6 +20,7 @@ pub(crate) fn run(
         match read_bounded(ctx, path) {
             Ok(bytes) => stdout.extend_from_slice(&bytes),
             Err(ExecError::Denied(msg)) => return Err(ExecError::Denied(msg)),
+            Err(ExecError::Limit(msg)) => return Err(ExecError::Limit(msg)),
             Err(ExecError::Fail(msg)) => {
                 code = 1;
                 stderr.extend_from_slice(format!("cat: {msg}\n").as_bytes());

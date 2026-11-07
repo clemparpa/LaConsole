@@ -272,3 +272,99 @@ fn e2e_http_localhost_only() {
     let resp = session.send("http GET http://example.com/");
     assert_eq!(resp["code"], 2);
 }
+
+#[test]
+fn e2e_success_response_has_no_kind_field() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("hello.txt"), "hello\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("cat hello.txt");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert!(resp.get("kind").is_none());
+}
+
+#[test]
+fn e2e_error_kind_denied_for_security_refusal() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("cat ../../etc/passwd");
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+    let resp = session.send("rm -rf /");
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+}
+
+#[test]
+fn e2e_error_kind_limit_for_read_bound() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("big.bin"), vec![0u8; 1024 * 1024 + 1]).unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("cat big.bin");
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 3);
+    assert_eq!(resp["kind"], "limit");
+}
+
+#[test]
+fn e2e_error_kind_fail_for_missing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("cat nope.txt");
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 1);
+    assert_eq!(resp["kind"], "fail");
+}
+
+#[test]
+fn e2e_help_lists_every_command_with_all_its_syntaxes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("help");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    let stdout = resp["stdout"].as_str().unwrap();
+    for expected in [
+        "cat <path...>",
+        "echo <text>",
+        "echo <text> > <path>",
+        "ls [path...]",
+        "ls [path...] --all",
+        "grep <pattern> <path...>",
+        "grep <pattern> <path...> --all",
+        "sub <pattern> <replacement> <path...>",
+        "http <METHOD> <url>",
+        "trusted <name>",
+        "help",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "help output missing {expected:?}:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn e2e_help_specific_command_shows_only_its_syntaxes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("help echo");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    let stdout = resp["stdout"].as_str().unwrap();
+    assert!(stdout.contains("echo <text>"));
+    assert!(stdout.contains("echo <text> > <path>"));
+    assert!(!stdout.contains("cat <path...>"));
+}
+
+#[test]
+fn e2e_help_unknown_command_is_a_fail() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("help nope");
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 1);
+    assert_eq!(resp["kind"], "fail");
+}

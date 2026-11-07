@@ -34,11 +34,23 @@ la-console --root <chemin> [--max-output-bytes N] [--timeout-secs N] [--trusted-
   {"ok": true, "code": 0, "stdout": "...", "stderr": "", "truncated": false}
   ```
 
-- En cas de refus (validation échouée) :
+- En cas d'échec, un champ structuré `kind` (absent en cas de succès) distingue
+  la nature de l'échec, pour que l'appelant n'ait pas à parser `stderr` :
 
   ```json
-  {"ok": false, "code": 2, "stdout": "", "stderr": "denied: path escapes root", "truncated": false}
+  {"ok": false, "code": 2, "kind": "denied", "stdout": "", "stderr": "denied: path escapes root", "truncated": false}
   ```
+
+  - `"denied"` (code 2) : refus de sécurité (chemin hors du root, fichier
+    sensible, commande inconnue, opérateur interdit, refus trusted, hôte
+    HTTP hors allowlist, JSON invalide, op inconnu) ;
+  - `"limit"` (code 3) : une limite configurée est dépassée (timeout,
+    quota disque, borne de lecture/écriture, trop de matchs de glob, trop
+    de fichiers/entrées/matchs, corps ou réponse HTTP trop grand, trop de
+    redirects) — ce n'est pas interdit, c'est juste trop ;
+  - `"fail"` (code 1) : erreur d'usage ou d'I/O d'une commande pourtant
+    autorisée (opérande manquant, fichier introuvable, pattern invalide,
+    commande terminée avec un code non nul).
 
 Règles :
 

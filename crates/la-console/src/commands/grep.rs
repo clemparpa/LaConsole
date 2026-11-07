@@ -52,6 +52,7 @@ pub(crate) fn run(
                 }
             }
             Err(ExecError::Denied(msg)) => return Err(ExecError::Denied(msg)),
+            Err(ExecError::Limit(msg)) => return Err(ExecError::Limit(msg)),
             Err(ExecError::Fail(msg)) => {
                 code = 1;
                 stderr.extend_from_slice(format!("grep: {msg}\n").as_bytes());
@@ -92,7 +93,7 @@ fn search_target(
                 continue;
             }
             if files.len() > ctx.limits.max_grep_files {
-                return Err(ExecError::Denied(format!(
+                return Err(ExecError::Limit(format!(
                     "grep: too many files (max {})",
                     ctx.limits.max_grep_files
                 )));
@@ -165,7 +166,7 @@ fn search_file(
         .search_path(matcher, path, &mut sink)
         .map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
     if sink.overflow {
-        return Err(ExecError::Denied(format!(
+        return Err(ExecError::Limit(format!(
             "grep: too many matches (max {limit})"
         )));
     }
@@ -317,7 +318,7 @@ mod tests {
         let node = parse_input("grep a big.txt", &HashMap::new()).unwrap();
         assert!(matches!(
             execute(&node, &ctx).unwrap_err(),
-            ExecError::Denied(_)
+            ExecError::Limit(_)
         ));
     }
 

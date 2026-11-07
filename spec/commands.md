@@ -30,6 +30,7 @@ sensibles**, même après expansion de glob ou substitution de variable.
 | variables `$VAR`, `${VAR}`, `$(VAR)` | ⚠️ restreint | uniquement des variables **déclarées par l'humain** (ex. `$ROOT`) ; `$(...)` accepté mais le contenu doit matcher `^[A-Za-z_][A-Za-z0-9_]*$` (nom de variable seule, jamais de sous-exécution) ; **pas d'affectation `FOO=bar`**, pas de variables d'état interne (`$?`, `$!`, `$0`...) |
 | backticks | ❌ | jamais de sous-exécution de commande |
 | `trusted <nom>` | ✅ | voir ci-dessous |
+| `help [commande]` | ✅ | lecture seule, sans effet de bord : liste les commandes du registre (avec toutes leurs syntaxes, y compris les formes bis) et les commandes `trusted` déclarées ; la source est le registre `COMMANDS` partagé avec le dispatcher, donc jamais désynchronisé |
 | tout le reste | ❌ | `unknown command`, fail-closed |
 
 ## Commandes trusted

@@ -24,6 +24,7 @@ pub(crate) fn run(
         match substitute_one(ctx, &pattern, repl, rel, quota) {
             Ok(()) => {}
             Err(ExecError::Denied(msg)) => return Err(ExecError::Denied(msg)),
+            Err(ExecError::Limit(msg)) => return Err(ExecError::Limit(msg)),
             Err(ExecError::Fail(msg)) => {
                 code = 1;
                 stderr.extend_from_slice(format!("sub: {msg}\n").as_bytes());
@@ -155,7 +156,7 @@ mod tests {
         let node = parse_input("sub a b big.txt", &HashMap::new()).unwrap();
         assert!(matches!(
             execute(&node, &ctx).unwrap_err(),
-            ExecError::Denied(_)
+            ExecError::Limit(_)
         ));
     }
 
