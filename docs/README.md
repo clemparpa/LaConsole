@@ -19,7 +19,11 @@ la-console --root <chemin> [--timeout-secs N] [--trusted-file <chemin> --trusted
 
 - Entrée : `{"op": "exec", "cmd": "ls src"}`
 - Sortie : `{"ok": true, "code": 0, "stdout": "...", "stderr": "", "truncated": false}`
-- Refus : `{"ok": false, "code": 2, "stdout": "", "stderr": "denied: ...", "truncated": false}`
+- Refus : `{"ok": false, "code": 2, "kind": "denied", "stdout": "", "stderr": "denied: ...", "truncated": false}`
+
+En cas d'échec, le champ `kind` (absent en cas de succès) classe l'erreur :
+`denied` (code 2, refus de sécurité), `limit` (code 3, limite dépassée :
+timeout, quota, bornes) ou `fail` (code 1, erreur d'usage/I/O).
 
 La console est stateless : chaque commande repart du `root`.
 
@@ -27,9 +31,10 @@ La console est stateless : chaque commande repart du `root`.
 
 Whitelist v1 (voir [ROADMAP.md](../ROADMAP.md)) :
 `cat <path...>`, `ls [path] [--all]`, `echo <text> [> path]`,
-`grep <pattern> <path...> [--all]`, `sub <pattern> <repl> <path...>` et
-`http <METHOD> <url> [--data b] [--header k:v]` (v1 : `localhost` uniquement)
-sont disponibles. Toute autre commande est refusée (`denied: unknown command`,
+`grep <pattern> <path...> [--all]`, `sub <pattern> <repl> <path...>`,
+`http <METHOD> <url> [--data b] [--header k:v]` (v1 : `localhost` uniquement) et
+`help [commande]` (liste les commandes disponibles et leurs syntaxes) sont
+disponibles. Toute autre commande est refusée (`denied: unknown command`,
 code 2).
 
 `trusted <nom> [args...]` exécute une commande définie par l'humain dans

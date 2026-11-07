@@ -1,6 +1,7 @@
 pub mod cat;
 pub mod echo;
 pub mod grep;
+pub mod help;
 pub mod http;
 pub mod ls;
 pub mod sub;
@@ -65,12 +66,50 @@ pub struct Ctx {
     pub trusted: Option<crate::trusted::TrustedRegistry>,
 }
 
+/// Structured classification of an execution error, serialized into the
+/// JSON response `kind` field so the caller can tell a security refusal
+/// apart from a limit being exceeded without parsing `stderr`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorKind {
+    /// Security refusal (path escape, sensitive file, unknown command, ...).
+    Denied,
+    /// A configured limit was exceeded (timeout, disk quota, read/write
+    /// bounds, match counts, ...): not forbidden, just too much.
+    Limit,
+    /// Usage or I/O failure of an otherwise allowed command.
+    Fail,
+}
+
+impl ErrorKind {
+    /// Exit-style code carried in the JSON response: 2 denied, 3 limit, 1 fail.
+    pub fn code(self) -> u16 {
+        match self {
+            ErrorKind::Denied => 2,
+            ErrorKind::Limit => 3,
+            ErrorKind::Fail => 1,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ExecError {
     #[error("{0}")]
     Denied(String),
     #[error("{0}")]
+    Limit(String),
+    #[error("{0}")]
     Fail(String),
+}
+
+impl ExecError {
+    pub fn kind(&self) -> ErrorKind {
+        match self {
+            ExecError::Denied(_) => ErrorKind::Denied,
+            ExecError::Limit(_) => ErrorKind::Limit,
+            ExecError::Fail(_) => ErrorKind::Fail,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -81,7 +120,8 @@ pub struct ExecOutcome {
     pub truncated: bool,
 }
 
-pub(crate) struct RawOutput {
+#[derive(Debug)]
+pub struct RawOutput {
     pub code: u16,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -218,21 +258,77 @@ fn exec_simple(
     })
 }
 
+/// One entry of the command registry: the single source of truth shared by
+/// the dispatcher and the `help` command, so the two can never drift apart.
+/// `syntaxes` lists every accepted form of the command (including alternate
+/// spellings of the same command).
+pub struct CommandSpec {
+    pub name: &'static str,
+    pub syntaxes: &'static [&'static str],
+    pub summary: &'static str,
+    pub run: fn(&SimpleCommand, &Ctx, &Arc<DiskQuota>) -> Result<RawOutput, ExecError>,
+}
+
+pub static COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        name: "cat",
+        syntaxes: &["cat <path...>"],
+        summary: "print file contents (bounded read, globs allowed)",
+        run: cat::run,
+    },
+    CommandSpec {
+        name: "echo",
+        syntaxes: &["echo <text>", "echo <text> > <path>"],
+        summary: "print text, optionally redirected into a file",
+        run: echo::run,
+    },
+    CommandSpec {
+        name: "grep",
+        syntaxes: &["grep <pattern> <path...>", "grep <pattern> <path...> --all"],
+        summary: "search files (.gitignore respected unless --all)",
+        run: grep::run,
+    },
+    CommandSpec {
+        name: "http",
+        syntaxes: &["http <METHOD> <url> [--data <body>] [--header <k:v>]"],
+        summary: "HTTP request, localhost only in v1",
+        run: http::run,
+    },
+    CommandSpec {
+        name: "ls",
+        syntaxes: &["ls [path...]", "ls [path...] --all"],
+        summary: "list directory entries (.gitignore respected unless --all)",
+        run: ls::run,
+    },
+    CommandSpec {
+        name: "sub",
+        syntaxes: &["sub <pattern> <replacement> <path...>"],
+        summary: "regex substitution, rewrites files in place",
+        run: sub::run,
+    },
+    CommandSpec {
+        name: "trusted",
+        syntaxes: &["trusted <name> [args...]"],
+        summary: "run a command declared in the trusted file",
+        run: crate::trusted::run,
+    },
+    CommandSpec {
+        name: "help",
+        syntaxes: &["help", "help <command>"],
+        summary: "list available commands and their syntaxes",
+        run: help::run,
+    },
+];
+
 fn dispatch(
     cmd: &SimpleCommand,
     ctx: &Ctx,
     quota: &Arc<DiskQuota>,
 ) -> Result<RawOutput, ExecError> {
     let name = cmd.argv[0].text.as_str();
-    match name {
-        "cat" => cat::run(cmd, ctx, quota),
-        "echo" => echo::run(cmd, ctx, quota),
-        "grep" => grep::run(cmd, ctx, quota),
-        "http" => http::run(cmd, ctx, quota),
-        "ls" => ls::run(cmd, ctx, quota),
-        "sub" => sub::run(cmd, ctx, quota),
-        "trusted" => crate::trusted::run(cmd, ctx, quota),
-        _ => Err(ExecError::Denied(format!("unknown command: {name}"))),
+    match COMMANDS.iter().find(|spec| spec.name == name) {
+        Some(spec) => (spec.run)(cmd, ctx, quota),
+        None => Err(ExecError::Denied(format!("unknown command: {name}"))),
     }
 }
 
@@ -253,7 +349,7 @@ fn run_with_timeout(
     });
     match rx.recv_timeout(timeout) {
         Ok(result) => result,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(ExecError::Denied(format!(
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(ExecError::Limit(format!(
             "command timed out after {}s",
             ctx.limits.command_timeout_secs
         ))),
@@ -286,10 +382,10 @@ pub(crate) fn sink_to_exec(err: SinkError) -> ExecError {
         SinkError::Denied(denied) => ExecError::Denied(denied.to_string()),
         SinkError::Sensitive(path) => ExecError::Denied(format!("sensitive file: {path}")),
         SinkError::WriteBoundExceeded(max) => {
-            ExecError::Denied(format!("write bound exceeded: {max} bytes max"))
+            ExecError::Limit(format!("write bound exceeded: {max} bytes max"))
         }
         SinkError::QuotaExceeded(max) => {
-            ExecError::Denied(format!("disk quota exceeded: {max} bytes max per command"))
+            ExecError::Limit(format!("disk quota exceeded: {max} bytes max per command"))
         }
         SinkError::Io(io) => ExecError::Fail(format!("i/o error: {io}")),
     }
@@ -314,8 +410,17 @@ pub(crate) fn collect_paths<'a>(
     for arg in args {
         if arg.glob {
             paths.extend(
-                expand_globs(ctx.resolver.root(), &arg.text, ctx.limits.max_glob_matches)
-                    .map_err(|err| ExecError::Denied(err.to_string()))?,
+                expand_globs(ctx.resolver.root(), &arg.text, ctx.limits.max_glob_matches).map_err(
+                    |err| match err {
+                        crate::parse::ParseError::TooManyGlobMatches(_) => {
+                            ExecError::Limit(err.to_string())
+                        }
+                        crate::parse::ParseError::GlobDenied(_) => {
+                            ExecError::Denied(err.to_string())
+                        }
+                        _ => ExecError::Fail(err.to_string()),
+                    },
+                )?,
             );
         } else {
             paths.push(arg.text.clone());
@@ -335,7 +440,7 @@ pub(crate) fn resolve_read_target(
 
 pub(crate) fn check_read_bound(ctx: &Ctx, rel: &str, meta: &fs::Metadata) -> Result<(), ExecError> {
     if meta.len() > ctx.limits.max_read_bytes as u64 {
-        return Err(ExecError::Denied(format!(
+        return Err(ExecError::Limit(format!(
             "{rel}: file too large ({} bytes max)",
             ctx.limits.max_read_bytes
         )));
@@ -351,7 +456,7 @@ pub(crate) fn read_bounded(ctx: &Ctx, rel: &str) -> Result<Vec<u8>, ExecError> {
     check_read_bound(ctx, rel, &meta)?;
     let bytes = fs::read(&target).map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
     if bytes.len() > ctx.limits.max_read_bytes {
-        return Err(ExecError::Denied(format!(
+        return Err(ExecError::Limit(format!(
             "{rel}: file too large ({} bytes max)",
             ctx.limits.max_read_bytes
         )));
@@ -457,7 +562,7 @@ mod tests {
         let ctx = make_ctx(resolver, vec![], vec![], 4);
         let node = parse_input("cat big.txt", &HashMap::new()).unwrap();
         let err = execute(&node, &ctx).unwrap_err();
-        assert!(matches!(err, ExecError::Denied(_)));
+        assert!(matches!(err, ExecError::Limit(_)));
     }
 
     #[test]
@@ -579,7 +684,7 @@ mod bound_tests {
         .unwrap();
         let err = execute(&node, &ctx).unwrap_err();
         assert!(
-            matches!(err, ExecError::Denied(ref m) if m.contains("timed out")),
+            matches!(err, ExecError::Limit(ref m) if m.contains("timed out")),
             "got {err:?}"
         );
     }
@@ -610,7 +715,7 @@ mod bound_tests {
         let node = parse_input("echo hello > out.txt", &HashMap::new()).unwrap();
         let err = execute(&node, &ctx).unwrap_err();
         assert!(
-            matches!(err, ExecError::Denied(ref m) if m.contains("disk quota")),
+            matches!(err, ExecError::Limit(ref m) if m.contains("disk quota")),
             "got {err:?}"
         );
     }
@@ -716,7 +821,7 @@ mod helper_tests {
         let argv = args("cmd *.txt");
         assert!(matches!(
             collect_paths(&ctx, &argv[1..]),
-            Err(ExecError::Denied(_))
+            Err(ExecError::Limit(_))
         ));
     }
 
@@ -752,7 +857,7 @@ mod helper_tests {
         ));
         assert!(matches!(
             read_bounded(&ctx, "big.bin"),
-            Err(ExecError::Denied(_))
+            Err(ExecError::Limit(_))
         ));
         assert!(matches!(
             read_bounded(&ctx, "../escape.txt"),
@@ -795,7 +900,7 @@ mod helper_tests {
         let ctx = make_ctx(resolver.clone(), vec![], vec![], limits);
         assert!(matches!(
             write_file(&ctx, "big.txt", b"too long", false, test_quota()),
-            Err(ExecError::Denied(_))
+            Err(ExecError::Limit(_))
         ));
     }
 
