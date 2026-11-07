@@ -58,3 +58,11 @@
 
 - Workflow nightly (`.github/workflows/nightly.yml`, cron quotidien + `workflow_dispatch`) : fuzz 30 min sur `parse_input` + `resolve_path` (matrice, toolchain nightly, cible `x86_64-unknown-linux-gnu` car ASan est incompatible avec musl statique), `cargo mutants` sur `resolve.rs` + `parse.rs` avec seuil de score ≥ 80 % vérifié via `mutants.out/outcomes.json`.
 - **Testable** : le job nightly tourne vert sur `main`.
+
+## Suite v1 (backlog, à prioriser)
+
+- **Erreurs structurées** : distinguer dans la réponse JSON les refus de sécurité (`denied`, code 2) des dépassements de limites (timeout, quota disque, borne de sortie) — ex. champ `kind` ou codes distincts — pour que l'agent distingue « interdit » de « trop lent / trop gros » sans parser le texte de `stderr`.
+- **`help`** : commande en lecture seule, sans effet de bord, listant pour l'agent les commandes whitelist disponibles et les commandes `trusted` déclarées.
+- **`sed`** : évaluer le support (alias restreint ou extension de `sub <pattern> <repl> <path...>`) avec un périmètre précis avant implémentation.
+- **Plugins et responsabilité d'exécution** (discussion ouverte) : concevoir un mécanisme de « plugins » (ex. module lançant des OCI) et répartir les responsabilités — le harnais de l'agent déclare la politique (fichiers revus par l'humain, épinglés par sha256, comme `trusted.txt`), mais la console conserve la validation, le confinement, les limites et le kill de l'exécution (jamais délégués au harnais) ; à terme, user namespace + chroot côté console (voir `spec/security.md`, v2) comme defense in depth.
+- **Support Windows** (discussion ouverte) : le code v1 est Unix-only (`std::os::unix` pour `st_dev`/`st_ino` dans `resolve.rs`, `symlink` dans les tests, `/bin/sh` + `ulimit` dans `trusted.rs`). Choix à faire : rester Unix-only (Linux + macOS) en v1 et le documenter, ou porter sur Windows via une couche d'abstraction des primitives plateforme (hardlink, symlink, shell, limites) — en sachant que chaque plateforme ajoutée est une nouvelle surface d'attaque à auditer.
