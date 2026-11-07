@@ -203,6 +203,9 @@ fn lex(input: &str) -> Result<Vec<Tok>, ParseError> {
                         return Err(ParseError::Backticks);
                     }
                     if chars[i] == '\\' && i + 1 < chars.len() {
+                        if chars[i + 1] == '`' {
+                            return Err(ParseError::Backticks);
+                        }
                         cur.push(chars[i]);
                         cur.push(chars[i + 1]);
                         i += 2;
