@@ -34,7 +34,7 @@ pub(crate) fn run(
                     return Err(ExecError::Fail("http: --data needs a value".to_string()));
                 };
                 if body.len() > ctx.limits.max_http_body_bytes {
-                    return Err(ExecError::Denied(format!(
+                    return Err(ExecError::Limit(format!(
                         "http: --data too large ({} bytes max)",
                         ctx.limits.max_http_body_bytes
                     )));
@@ -87,7 +87,7 @@ pub(crate) fn run(
         let status = resp.status();
         if status.is_redirection() {
             if redirects_left == 0 {
-                return Err(ExecError::Denied(format!(
+                return Err(ExecError::Limit(format!(
                     "http: too many redirects (max {})",
                     ctx.limits.max_http_redirects
                 )));
@@ -112,7 +112,7 @@ pub(crate) fn run(
             .read_to_end(&mut body)
             .map_err(|err| ExecError::Fail(format!("http: read error: {err}")))?;
         if body.len() > ctx.limits.max_http_response_bytes {
-            return Err(ExecError::Denied(format!(
+            return Err(ExecError::Limit(format!(
                 "http: response too large ({} bytes max)",
                 ctx.limits.max_http_response_bytes
             )));
@@ -305,7 +305,7 @@ mod tests {
         });
         let err = run_cmd(&dir, &format!("http GET http://127.0.0.1:{port}/")).unwrap_err();
         match &err {
-            ExecError::Denied(m) => assert!(m.contains("too many redirects"), "got {m}"),
+            ExecError::Limit(m) => assert!(m.contains("too many redirects"), "got {m}"),
             other => panic!("expected Denied, got {other:?}"),
         }
         let _ = MAX_REDIRECTS;
@@ -346,7 +346,7 @@ mod tests {
         let big = "x".repeat(DEFAULT_MAX_HTTP_BODY_BYTES + 1);
         let err =
             run_cmd(&dir, &format!("http POST http://127.0.0.1:1/ --data {big}")).unwrap_err();
-        assert!(matches!(err, ExecError::Denied(_)));
+        assert!(matches!(err, ExecError::Limit(_)));
     }
 
     #[test]

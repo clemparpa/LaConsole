@@ -149,7 +149,7 @@ mod tests {
         let ctx = make_ctx(resolver, vec![], vec![], 3);
         let node = parse_input("echo too-long > out.txt", &HashMap::new()).unwrap();
         let err = execute(&node, &ctx).unwrap_err();
-        assert!(matches!(err, ExecError::Denied(m) if m.contains("write bound")));
+        assert!(matches!(err, ExecError::Limit(m) if m.contains("write bound")));
     }
 
     #[test]

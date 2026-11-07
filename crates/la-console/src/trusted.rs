@@ -94,6 +94,13 @@ impl TrustedRegistry {
             .get(name)
             .ok_or_else(|| TrustedError::UnknownName(name.to_string()))
     }
+
+    /// All declared entries, sorted by name (deterministic `help` output).
+    pub fn entries_sorted(&self) -> Vec<&TrustedEntry> {
+        let mut entries: Vec<&TrustedEntry> = self.entries.values().collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    }
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -293,7 +300,7 @@ fn run_child(mut command: Command, timeout_secs: u64) -> Result<RawOutput, ExecE
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(ExecError::Denied(format!(
+                    return Err(ExecError::Limit(format!(
                         "command timed out after {timeout_secs}s"
                     )));
                 }
@@ -574,7 +581,7 @@ mod tests {
         ctx.limits.command_timeout_secs = 1;
         let start = Instant::now();
         let err = run_cmd(&ctx, "trusted slow").unwrap_err();
-        assert!(matches!(err, ExecError::Denied(m) if m.contains("timed out")));
+        assert!(matches!(err, ExecError::Limit(m) if m.contains("timed out")));
         assert!(start.elapsed() < Duration::from_secs(10));
     }
 

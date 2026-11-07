@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use crate::commands::{execute, Ctx, ExecError, Limits};
+use crate::commands::{execute, Ctx, ErrorKind, Limits};
 use crate::resolve::Resolver;
 use crate::trusted::TrustedRegistry;
 
@@ -17,6 +17,10 @@ pub struct Request {
 pub struct Response {
     pub ok: bool,
     pub code: u16,
+    /// Structured error classification, present only on failure so successful
+    /// responses keep the exact v1 contract.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ErrorKind>,
     pub stdout: String,
     pub stderr: String,
     pub truncated: bool,
@@ -83,14 +87,24 @@ pub fn run<R: BufRead, W: Write>(
     }
 }
 
-fn denied(message: String) -> Response {
+fn error_response(kind: ErrorKind, message: String) -> Response {
+    let prefix = match kind {
+        ErrorKind::Denied => "denied",
+        ErrorKind::Limit => "limit",
+        ErrorKind::Fail => "fail",
+    };
     Response {
         ok: false,
-        code: 2,
+        code: kind.code(),
+        kind: Some(kind),
         stdout: String::new(),
-        stderr: format!("denied: {message}"),
+        stderr: format!("{prefix}: {message}"),
         truncated: false,
     }
+}
+
+fn denied(message: String) -> Response {
+    error_response(ErrorKind::Denied, message)
 }
 
 fn handle_line(line: &str, ctx: &Ctx) -> Response {
@@ -103,18 +117,12 @@ fn handle_line(line: &str, ctx: &Ctx) -> Response {
                     Ok(outcome) => Response {
                         ok: outcome.code == 0,
                         code: outcome.code,
+                        kind: (outcome.code != 0).then_some(ErrorKind::Fail),
                         stdout: outcome.stdout,
                         stderr: outcome.stderr,
                         truncated: outcome.truncated,
                     },
-                    Err(ExecError::Denied(message)) => denied(message),
-                    Err(ExecError::Fail(message)) => Response {
-                        ok: false,
-                        code: 1,
-                        stdout: String::new(),
-                        stderr: message,
-                        truncated: false,
-                    },
+                    Err(err) => error_response(err.kind(), err.to_string()),
                 },
             }
         }

@@ -24,6 +24,7 @@ fn e2e_json_line_protocol() {
         let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(resp["ok"], false);
         assert_eq!(resp["code"], 2);
+        assert_eq!(resp["kind"], "denied");
         assert!(resp["stdout"].is_string());
         assert!(resp["stderr"].is_string());
         assert_eq!(resp["truncated"], false);
