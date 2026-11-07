@@ -51,15 +51,15 @@ jobs:
       - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
           tool: cargo-mutants
-      # cargo-mutants has no --minimum-mutant-score flag: exit code 2 just means
-      # "some mutants survived", so accept 0 and 2 here and enforce the score
-      # threshold ourselves from mutants.out/outcomes.json (MSI =
-      # caught / (total_mutants - unviable)).
+      # cargo-mutants has no --minimum-mutant-score flag: accept exit codes 0, 2
+      # (mutants survived) and 3 (timeouts = mutants in infinite loops, counted
+      # as not caught) and enforce the score threshold ourselves from
+      # mutants.out/outcomes.json (MSI = caught / (total_mutants - unviable)).
       - name: Mutation testing on resolve.rs + parse.rs
         run: |
           rc=0
           cargo mutants --file crates/la-console/src/resolve.rs --file crates/la-console/src/parse.rs || rc=$?
-          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then exit "$rc"; fi
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && [ "$rc" -ne 3 ]; then exit "$rc"; fi
           score=$(jq -r '(.caught * 100) / (if (.total_mutants - .unviable) <= 0 then 1 else (.total_mutants - .unviable) end)' mutants.out/outcomes.json)
           echo "Mutant score: ${score}% (threshold: 80%)"
           jq -e --argjson min 80 '(.caught * 100) / (if (.total_mutants - .unviable) <= 0 then 1 else (.total_mutants - .unviable) end) >= $min' mutants.out/outcomes.json > /dev/null
