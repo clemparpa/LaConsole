@@ -1,0 +1,1 @@
+grep foo a.txt b.txt | cat

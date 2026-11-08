@@ -35,9 +35,13 @@ jobs:
       # --target gnu (host) instead of the default musl: ASan (-Zsanitizer=address)
       # is incompatible with musl's statically linked libc ("sanitizer is
       # incompatible with statically linked libc").
+      # Corpus dir is cargo-fuzz's default (fuzz/corpus/<target>, seeds committed
+      # in the repo). -max_len caps generated inputs at 4096 bytes (libFuzzer's
+      # default, made explicit): longer inputs only slow down each exec without
+      # reaching deeper parser code.
       - name: Fuzz ${{ matrix.target }} for 30 min
         working-directory: fuzz
-        run: cargo fuzz run ${{ matrix.target }} --target x86_64-unknown-linux-gnu -- -max_total_time=1800
+        run: cargo fuzz run ${{ matrix.target }} --target x86_64-unknown-linux-gnu -- -max_total_time=1800 -max_len=4096
 
   mutants:
     name: cargo mutants (score >= 80%)

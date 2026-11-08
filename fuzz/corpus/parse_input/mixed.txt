@@ -1,0 +1,1 @@
+ls /abs/path && echo "x;y" | grep ; cat 'a b'
