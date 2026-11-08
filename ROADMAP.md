@@ -59,12 +59,18 @@
 - Workflow nightly (`.github/workflows/nightly.yml`, cron quotidien + `workflow_dispatch`) : fuzz 30 min sur `parse_input` + `resolve_path` (matrice, toolchain nightly, cible `x86_64-unknown-linux-gnu` car ASan est incompatible avec musl statique), `cargo mutants` sur `resolve.rs` + `parse.rs` avec seuil de score ≥ 80 % vérifié via `mutants.out/outcomes.json`.
 - **Testable** : le job nightly tourne vert sur `main`.
 
-## Suite v1 (backlog, à prioriser)
+## Suite v1 — terminée ✅
 
-- **Bornes configurables + `>>` exposé** ✅ (cette PR) : `--max-output-bytes N` au CLI (défaut 1 MiO, passé dans `Limits`), syntaxes `>>` listées dans le registre `COMMANDS` pour `cat`/`echo`/`grep`/`ls` (le parser et `FileSink` géraient déjà l'append).
-- **Redirection `<` (stdin depuis fichier)** ✅ (cette PR) : `Redirect::In` dans le parser, lecture bornée via `read_bounded` (resolve + sensibles + `max_read_bytes`) dans `exec_simple`, input passé aux commandes (`cat`/`grep` sans opérande lisent cet input).
-- **Erreurs structurées** ✅ (cette PR) : champ `kind` dans la réponse JSON (présent uniquement en cas d'échec) avec codes distincts — `denied`/2 (refus de sécurité), `limit`/3 (timeout, quota disque, bornes, trop de matchs), `fail`/1 (usage/I/O) — pour que l'agent distingue « interdit » de « trop lent / trop gros » sans parser le texte de `stderr`. Classification faite à la source (`ExecError::Limit`), conversion unique dans `console.rs`.
-- **`help`** ✅ (cette PR) : commande en lecture seule, sans effet de bord. Source de vérité unique = registre `COMMANDS` (`CommandSpec { name, syntaxes, summary, run }`) partagé par le dispatcher et `help` — ajouter une commande = une entrée, impossible à désynchroniser ; les syntaxes bis (ex. `echo <text>` / `echo <text> > <path>`) sont listées via le champ `syntaxes` ; les commandes `trusted` sont listées depuis le registre runtime.
-- **`sed`** ✅ (cette PR) : alias restreint `sed [-i] s/<pat>/<repl>/[g] <path...>` (une seule expression `s`, flag `g` uniquement, regex Rust en `(?m)`, `\1`/`&` dans le remplacement) ; sans `-i` affiche sur stdout (prévisualisation), avec `-i` réécrit en place via `FileSink` ; toute forme non couverte = erreur `fail` avec message précis. Voir `spec/commands.md`.
-- **Plugins et responsabilité d'exécution** (discussion ouverte) : concevoir un mécanisme de « plugins » (ex. module lançant des OCI) et répartir les responsabilités — le harnais de l'agent déclare la politique (fichiers revus par l'humain, épinglés par sha256, comme `trusted.txt`), mais la console conserve la validation, le confinement, les limites et le kill de l'exécution (jamais délégués au harnais) ; à terme, user namespace + chroot côté console (voir `spec/security.md`, v2) comme defense in depth.
-- **Support Windows** (discussion ouverte) : le code v1 est Unix-only (`std::os::unix` pour `st_dev`/`st_ino` dans `resolve.rs`, `symlink` dans les tests, `/bin/sh` + `ulimit` dans `trusted.rs`). Choix à faire : rester Unix-only (Linux + macOS) en v1 et le documenter, ou porter sur Windows via une couche d'abstraction des primitives plateforme (hardlink, symlink, shell, limites) — en sachant que chaque plateforme ajoutée est une nouvelle surface d'attaque à auditer.
+- **Bornes configurables + `>>` exposé** ✅ (PR #22) : `--max-output-bytes N` au CLI (défaut 1 MiO, passé dans `Limits`), syntaxes `>>` listées dans le registre `COMMANDS` pour `cat`/`echo`/`grep`/`ls`.
+- **Redirection `<` (stdin depuis fichier)** ✅ (PR #22) : `Redirect::In` dans le parser, lecture bornée via `read_bounded` (resolve + sensibles + `max_read_bytes`), input passé aux commandes (`cat`/`grep` sans opérande lisent cet input).
+- **Erreurs structurées** ✅ (PR #19) : champ `kind` (`denied`/2, `limit`/3, `fail`/1).
+- **`help`** ✅ (PR #19) : registre `COMMANDS` comme source de vérité unique.
+- **`sed`** ✅ (PR #20) : alias restreint `s///[g]`, preview stdout + `-i` in-place.
+
+La v1 est Unix-only (Linux + macOS), documenté.
+
+## v2 (backlog)
+
+- **Plugins et responsabilité d'exécution** (discussion ouverte) : concevoir un mécanisme de « plugins » (ex. module lançant des OCI) et répartir les responsabilités — le harnais de l'agent déclare la politique (fichiers revus par l'humain, épinglés par sha256, comme `trusted.txt`), mais la console conserve la validation, le confinement, les limites et le kill de l'exécution (jamais délégués au harnais).
+- **Support Windows** (discussion ouverte) : le code v1 est Unix-only (`std::os::unix` pour `st_dev`/`st_ino` dans `resolve.rs`, `symlink` dans les tests, `/bin/sh` + `ulimit` dans `trusted.rs`). Porter sur Windows via une couche d'abstraction des primitives plateforme (hardlink, symlink, shell, limites) — chaque plateforme ajoutée est une nouvelle surface d'attaque à auditer.
+- **User namespace + chroot** (voir `spec/security.md`) : defense in depth côté console pour le déploiement serveur.
