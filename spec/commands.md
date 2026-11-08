@@ -20,6 +20,7 @@ sensibles**, même après expansion de glob ou substitution de variable.
 | `echo <text> > <path>` | ✅ | `resolve()`, taille max, `>` seul opérateur de redirection en v1 (`>>` prévu) |
 | `grep <pattern> <path...>` | ✅ | via crate `grep`, fichiers bornés ; respecte `.gitignore` par défaut, `--all` pour tout chercher — chaque fichier matché passe quand même par `resolve()` + bornes |
 | `sub <pattern> <repl> <path>` (sed-like) | ✅ | substitution via `regex` uniquement, fichiers bornés |
+| `sed [-i] s/<pat>/<repl>/[g] <path...>` | ✅ | alias sed **restreint** : voir ci-dessous |
 | `http <METHOD> <url> [--data <body>] [--header k:v]` | ✅ | implémentation **Rust maison** (pas de binaire curl), crate `reqwest` + rustls côté console. Allowlist d'hôtes : v1 = `localhost`/`127.0.0.1`/`::1` uniquement, extensible via liste déclarée par l'humain. Blocage des IP de métadonnées cloud (169.254.169.254) et plages privées non déclarées. Timeout court, taille de réponse bornée, redirects revalidés contre l'allowlist. `--data` borné en taille |
 | `&&` | ✅ | chaînage séquentiel, stop au 1er échec. **Les deux côtés doivent être whitelist ou trusted.** Jamais de vrai shell |
 | `;` | ✅ | interprété comme `&&` (plus strict que bash : stop au 1er échec) |
@@ -32,6 +33,27 @@ sensibles**, même après expansion de glob ou substitution de variable.
 | `trusted <nom>` | ✅ | voir ci-dessous |
 | `help [commande]` | ✅ | lecture seule, sans effet de bord : liste les commandes du registre (avec toutes leurs syntaxes, y compris les formes bis) et les commandes `trusted` déclarées ; la source est le registre `COMMANDS` partagé avec le dispatcher, donc jamais désynchronisé |
 | tout le reste | ❌ | `unknown command`, fail-closed |
+
+## Alias `sed` (restreint)
+
+- Syntaxes : `sed s/<pat>/<repl>/[g] <path...>` (affiche le contenu transformé
+  sur stdout, **sans toucher aux fichiers** — prévisualisation) et
+  `sed -i s/<pat>/<repl>/[g] <path...>` (réécrit les fichiers en place via
+  `FileSink` : quota, masquage, bornes).
+- Une seule expression `s` par invocation, délimiteur arbitraire non
+  alphanumérique (ex. `s@a@b@g`), `\<delim>` échappé dans le pattern/repl.
+- Flag autorisé : **`g` uniquement** (remplacement global). Sans `g` : première
+  occurrence **par ligne** (comportement sed standard). Tout autre flag
+  (`i`, `p`, `w`, `e`, …), toute autre commande (`d`, `y`, adresses `2d`, …),
+  tout script multi-commandes (`s/a/b/;s/c/d/`) et toute option autre que
+  `-i` (`-n`, `-E`, `-e`, …) = erreur `fail` (code 1) avec message précis
+  indiquant la forme non supportée et la syntaxe acceptée.
+- Le pattern est une **regex Rust** (`regex`, temps linéaire) compilée avec
+  `(?m)` pour que `^`/`$` soient par ligne comme sed. Le remplacement accepte
+  les références de groupes façon sed (`\1`…`\9`, traduites en `$1`…`$9`) et
+  `&` (match entier, traduit en `$0`) ; `\&` = `&` littéral, `\\` = `\` littéral.
+- Cibles : globs autorisés, chaque fichier passe par `resolve()` + sensibles +
+  bornes de lecture ; en mode `-i` la réécriture passe par `FileSink`.
 
 ## Commandes trusted
 

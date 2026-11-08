@@ -32,6 +32,9 @@ La console est stateless : chaque commande repart du `root`.
 Whitelist v1 (voir [ROADMAP.md](../ROADMAP.md)) :
 `cat <path...>`, `ls [path] [--all]`, `echo <text> [> path]`,
 `grep <pattern> <path...> [--all]`, `sub <pattern> <repl> <path...>`,
+`sed [-i] s/<pat>/<repl>/[g] <path...>` (alias sed restreint : sans `-i` affiche
+le résultat sur stdout pour prévisualiser, avec `-i` réécrit les fichiers en
+place ; seule la forme `s///` avec le flag `g` est supportée),
 `http <METHOD> <url> [--data b] [--header k:v]` (v1 : `localhost` uniquement) et
 `help [commande]` (liste les commandes disponibles et leurs syntaxes) sont
 disponibles. Toute autre commande est refusée (`denied: unknown command`,

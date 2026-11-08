@@ -4,6 +4,7 @@ pub mod grep;
 pub mod help;
 pub mod http;
 pub mod ls;
+pub mod sed;
 pub mod sub;
 
 use std::fs;
@@ -299,6 +300,15 @@ pub static COMMANDS: &[CommandSpec] = &[
         syntaxes: &["ls [path...]", "ls [path...] --all"],
         summary: "list directory entries (.gitignore respected unless --all)",
         run: ls::run,
+    },
+    CommandSpec {
+        name: "sed",
+        syntaxes: &[
+            "sed s/<pat>/<repl>/[g] <path...>",
+            "sed -i s/<pat>/<repl>/[g] <path...>",
+        ],
+        summary: "restricted sed alias (s///[g] only): prints to stdout, -i rewrites in place",
+        run: sed::run,
     },
     CommandSpec {
         name: "sub",
