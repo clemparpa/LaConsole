@@ -17,7 +17,7 @@ sensibles**, même après expansion de glob ou substitution de variable.
 |---|---|---|
 | `cat <path>` | ✅ | `resolve()` + taille max |
 | `ls [path]` | ✅ | `resolve()`, entrées bornées ; respecte `.gitignore` par défaut, `--all` pour tout lister |
-| `echo <text> > <path>` | ✅ | `resolve()`, taille max, `>` seul opérateur de redirection en v1 (`>>` prévu) |
+| `echo <text> [> path | >> path]` | ✅ | `resolve()`, taille max, `>` écrase, `>>` append |
 | `grep <pattern> <path...>` | ✅ | via crate `grep`, fichiers bornés ; respecte `.gitignore` par défaut, `--all` pour tout chercher — chaque fichier matché passe quand même par `resolve()` + bornes |
 | `sub <pattern> <repl> <path>` (sed-like) | ✅ | substitution via `regex` uniquement, fichiers bornés |
 | `sed [-i] s/<pat>/<repl>/[g] <path...>` | ✅ | alias sed **restreint** : voir ci-dessous |

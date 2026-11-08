@@ -28,6 +28,7 @@ pub struct Response {
 
 pub struct Options {
     pub timeout_secs: u64,
+    pub max_output_bytes: Option<usize>,
     pub trusted_file: Option<PathBuf>,
     pub trusted_sha256: Option<String>,
     pub sensibles_file: Option<PathBuf>,
@@ -37,6 +38,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             timeout_secs: crate::commands::DEFAULT_COMMAND_TIMEOUT_SECS,
+            max_output_bytes: None,
             trusted_file: None,
             trusted_sha256: None,
             sensibles_file: None,
@@ -64,14 +66,18 @@ pub fn run<R: BufRead, W: Write>(
         ),
         None => None,
     };
+    let limits = Limits {
+        command_timeout_secs: opts.timeout_secs,
+        max_output_bytes: opts
+            .max_output_bytes
+            .unwrap_or(crate::sink::DEFAULT_MAX_OUTPUT_BYTES),
+        ..Limits::default()
+    };
     let ctx = Ctx {
         resolver,
         sensibles,
         secrets: Vec::new(),
-        limits: Limits {
-            command_timeout_secs: opts.timeout_secs,
-            ..Limits::default()
-        },
+        limits,
         trusted,
     };
     let mut line = String::new();

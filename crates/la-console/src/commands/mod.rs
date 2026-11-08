@@ -273,19 +273,32 @@ pub struct CommandSpec {
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "cat",
-        syntaxes: &["cat <path...>"],
+        syntaxes: &[
+            "cat <path...>",
+            "cat <path...> > <path>",
+            "cat <path...> >> <path>",
+        ],
         summary: "print file contents (bounded read, globs allowed)",
         run: cat::run,
     },
     CommandSpec {
         name: "echo",
-        syntaxes: &["echo <text>", "echo <text> > <path>"],
+        syntaxes: &[
+            "echo <text>",
+            "echo <text> > <path>",
+            "echo <text> >> <path>",
+        ],
         summary: "print text, optionally redirected into a file",
         run: echo::run,
     },
     CommandSpec {
         name: "grep",
-        syntaxes: &["grep <pattern> <path...>", "grep <pattern> <path...> --all"],
+        syntaxes: &[
+            "grep <pattern> <path...>",
+            "grep <pattern> <path...> --all",
+            "grep <pattern> <path...> > <path>",
+            "grep <pattern> <path...> >> <path>",
+        ],
         summary: "search files (.gitignore respected unless --all)",
         run: grep::run,
     },
@@ -297,7 +310,12 @@ pub static COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "ls",
-        syntaxes: &["ls [path...]", "ls [path...] --all"],
+        syntaxes: &[
+            "ls [path...]",
+            "ls [path...] --all",
+            "ls [path...] > <path>",
+            "ls [path...] >> <path>",
+        ],
         summary: "list directory entries (.gitignore respected unless --all)",
         run: ls::run,
     },
