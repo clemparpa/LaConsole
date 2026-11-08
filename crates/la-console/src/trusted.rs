@@ -201,6 +201,7 @@ fn trusted_to_exec(err: TrustedError) -> ExecError {
 
 pub(crate) fn run(
     cmd: &SimpleCommand,
+    _input: &[u8],
     ctx: &Ctx,
     _quota: &Arc<DiskQuota>,
 ) -> Result<RawOutput, ExecError> {

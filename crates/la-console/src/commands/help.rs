@@ -6,6 +6,7 @@ use crate::sink::DiskQuota;
 
 pub(crate) fn run(
     cmd: &SimpleCommand,
+    _input: &[u8],
     ctx: &Ctx,
     _quota: &Arc<DiskQuota>,
 ) -> Result<RawOutput, ExecError> {
@@ -97,7 +98,7 @@ mod tests {
         let crate::parse::Node::Simple(simple) = node else {
             panic!("expected simple command");
         };
-        run(&simple, &ctx, &Arc::new(DiskQuota::new(1024)))
+        run(&simple, &[], &ctx, &Arc::new(DiskQuota::new(1024)))
     }
 
     #[test]

@@ -26,7 +26,7 @@ sensibles**, même après expansion de glob ou substitution de variable.
 | `;` | ✅ | interprété comme `&&` (plus strict que bash : stop au 1er échec) |
 | pipes `\|` | ✅ (prévu) | **whitelist uniquement, jamais avec `trusted`** ; la console unwrap le `stdout` de la commande de gauche et le passe en entrée de celle de droite |
 | redirections `>`, `>>`, `2>`, `2>&1`, `&>` | ✅ | le chemin de destination passe par la **boucle de validation** (resolve + sensibles + bornes) avant toute exécution. `>>` = append autorisé |
-| redirection `<` (stdin depuis fichier) | ⏳ reportée | à ouvrir plus tard avec le même pattern : boucle de validation identique + canal interne dédié (jamais le stdin du processus, qui appartient au protocole JSON) |
+| redirection `<` (stdin depuis fichier) | ✅ | le fichier source passe par la **boucle de validation** (resolve + sensibles + borne de lecture) avant exécution ; le contenu est lu en mémoire et passé comme entrée à la commande (jamais le stdin du processus, qui appartient au protocole JSON) |
 | globs `*`, `?`, `**` | ✅ | via `wax` ; **chaque fichier matché passe individuellement par `resolve()` + sensibles**, nb de matchs borné |
 | variables `$VAR`, `${VAR}`, `$(VAR)` | ⚠️ restreint | uniquement des variables **déclarées par l'humain** (ex. `$ROOT`) ; `$(...)` accepté mais le contenu doit matcher `^[A-Za-z_][A-Za-z0-9_]*$` (nom de variable seule, jamais de sous-exécution) ; **pas d'affectation `FOO=bar`**, pas de variables d'état interne (`$?`, `$!`, `$0`...) |
 | backticks | ❌ | jamais de sous-exécution de commande |

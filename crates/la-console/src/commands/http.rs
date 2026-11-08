@@ -13,6 +13,7 @@ const ALLOWED_HOSTS: [&str; 1] = ["localhost"];
 
 pub(crate) fn run(
     cmd: &SimpleCommand,
+    _input: &[u8],
     ctx: &Ctx,
     _quota: &std::sync::Arc<crate::sink::DiskQuota>,
 ) -> Result<RawOutput, ExecError> {

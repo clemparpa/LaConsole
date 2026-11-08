@@ -7,6 +7,7 @@ pub const DEFAULT_MAX_GREP_MATCHES: usize = 10_000;
 
 pub(crate) fn run(
     cmd: &SimpleCommand,
+    input: &[u8],
     ctx: &Ctx,
     _quota: &std::sync::Arc<crate::sink::DiskQuota>,
 ) -> Result<RawOutput, ExecError> {
@@ -34,16 +35,24 @@ pub(crate) fn run(
         .map_err(|err| ExecError::Fail(format!("grep: invalid pattern: {err}")))?;
 
     let targets = collect_paths(ctx, positional[1..].iter().copied())?;
-    if targets.is_empty() {
-        return Err(ExecError::Fail(
-            "grep: missing file operand (stdin is not available)".to_string(),
-        ));
-    }
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut code = 0u16;
     let mut match_count = 0usize;
+    if targets.is_empty() {
+        let found = search_slice(
+            &matcher,
+            "(stdin)",
+            input,
+            &mut stdout,
+            &mut match_count,
+            ctx.limits.max_grep_matches,
+        )?;
+        if !found {
+            code = 1;
+        }
+    }
     for rel in &targets {
         match search_target(ctx, &matcher, rel, all, &mut stdout, &mut match_count) {
             Ok(found) => {
@@ -142,6 +151,35 @@ fn search_target(
     } else {
         Err(ExecError::Fail(format!("{rel}: not a regular file")))
     }
+}
+
+fn search_slice(
+    matcher: &grep::regex::RegexMatcher,
+    rel: &str,
+    data: &[u8],
+    out: &mut Vec<u8>,
+    match_count: &mut usize,
+    limit: usize,
+) -> Result<bool, ExecError> {
+    let mut searcher = grep::searcher::Searcher::new();
+    searcher.set_binary_detection(grep::searcher::BinaryDetection::quit(b'\0'));
+    let mut sink = CollectSink {
+        rel: rel.to_string(),
+        out,
+        match_count,
+        found: false,
+        overflow: false,
+        limit,
+    };
+    searcher
+        .search_slice(matcher, data, &mut sink)
+        .map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
+    if sink.overflow {
+        return Err(ExecError::Limit(format!(
+            "grep: too many matches (max {limit})"
+        )));
+    }
+    Ok(sink.found)
 }
 
 fn search_file(
@@ -334,8 +372,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = run_cmd(&dir, "grep").unwrap_err();
         assert!(matches!(err, ExecError::Fail(m) if m.contains("missing pattern")));
-        let err = run_cmd(&dir, "grep foo").unwrap_err();
-        assert!(matches!(err, ExecError::Fail(m) if m.contains("missing file")));
+    }
+
+    #[test]
+    fn grep_reads_stdin_when_no_file_operand() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.txt"), "hello world\nfoo bar\n").unwrap();
+        let out = run_cmd(&dir, "grep foo < in.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert!(out.stdout.contains("foo bar"));
+        assert!(!out.stdout.contains("hello world"));
     }
 
     #[test]

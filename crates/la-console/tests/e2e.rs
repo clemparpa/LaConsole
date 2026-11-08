@@ -242,3 +242,45 @@ fn e2e_help_lists_append_syntax() {
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }
+
+#[test]
+fn e2e_stdin_redirect_feeds_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("in.txt"), "hello from file\n").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "cat < in.txt"}}"#).unwrap();
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "cat < ../outside.txt"}}"#).unwrap();
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "grep from < in.txt"}}"#).unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "hello from file\n");
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    assert!(resp["stdout"].as_str().unwrap().contains("hello from file"));
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}

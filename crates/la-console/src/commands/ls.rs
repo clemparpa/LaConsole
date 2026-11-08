@@ -5,6 +5,7 @@ use crate::parse::{Arg, SimpleCommand};
 
 pub(crate) fn run(
     cmd: &SimpleCommand,
+    _input: &[u8],
     ctx: &Ctx,
     _quota: &std::sync::Arc<crate::sink::DiskQuota>,
 ) -> Result<RawOutput, ExecError> {
