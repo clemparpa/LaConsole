@@ -334,6 +334,8 @@ fn e2e_help_lists_every_command_with_all_its_syntaxes() {
         "ls [path...] --all",
         "grep <pattern> <path...>",
         "grep <pattern> <path...> --all",
+        "sed s/<pat>/<repl>/[g] <path...>",
+        "sed -i s/<pat>/<repl>/[g] <path...>",
         "sub <pattern> <replacement> <path...>",
         "http <METHOD> <url>",
         "trusted <name>",
@@ -367,4 +369,63 @@ fn e2e_help_unknown_command_is_a_fail() {
     assert_eq!(resp["ok"], false);
     assert_eq!(resp["code"], 1);
     assert_eq!(resp["kind"], "fail");
+}
+
+#[test]
+fn e2e_sed_print_mode_previews_without_touching_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "foo bar foo\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send(r#"sed "s/foo/baz/g" a.txt"#);
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert!(resp.get("kind").is_none());
+    assert_eq!(resp["stdout"], "baz bar baz\n");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "foo bar foo\n"
+    );
+}
+
+#[test]
+fn e2e_sed_in_place_rewrites_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "foo\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send(r#"sed -i "s/foo/baz/g" a.txt"#);
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "baz\n"
+    );
+}
+
+#[test]
+fn e2e_sed_unsupported_forms_are_precise_fail_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+    let cases = [
+        (r#"sed "s/a/b/i" a.txt"#, "unsupported flag 'i'"),
+        (r#"sed "2d" a.txt"#, "unsupported command '2'"),
+        (r#"sed "s/a/b/;s/c/d/" a.txt"#, "multi-command"),
+        (r#"sed -n "s/a/b/" a.txt"#, "unsupported option '-n'"),
+        ("sed", "usage"),
+    ];
+    for (cmd, expected) in cases {
+        let resp = session.send(cmd);
+        assert_eq!(resp["ok"], false, "{cmd}");
+        assert_eq!(resp["code"], 1, "{cmd}");
+        assert_eq!(resp["kind"], "fail", "{cmd}");
+        assert!(
+            resp["stderr"].as_str().unwrap().contains(expected),
+            "{cmd}: stderr {:?} missing {expected:?}",
+            resp["stderr"]
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "x\n"
+    );
 }
