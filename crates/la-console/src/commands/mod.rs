@@ -169,7 +169,7 @@ fn exec_node(node: &Node, input: &[u8], ctx: &Ctx) -> Result<SimpleResult, ExecE
 
 fn exec_simple(
     cmd: &SimpleCommand,
-    _input: &[u8],
+    input: &[u8],
     ctx: &Ctx,
     final_output: bool,
 ) -> Result<SimpleResult, ExecError> {
@@ -179,8 +179,10 @@ fn exec_simple(
     let mut err_file: Option<FileSink> = None;
     let mut err_to_out = false;
     let mut all_to_out = false;
+    let mut in_file: Option<&str> = None;
     for redir in &cmd.redirects {
         match redir {
+            Redirect::In { path } => in_file = Some(path),
             Redirect::Out { path, append } => {
                 out_file = Some(new_file_sink(ctx, path, *append, quota.clone())?);
             }
@@ -195,7 +197,12 @@ fn exec_simple(
         }
     }
 
-    let raw = run_with_timeout(cmd, ctx, quota)?;
+    let effective_input: Vec<u8> = match in_file {
+        Some(path) => read_bounded(ctx, path)?,
+        None => input.to_vec(),
+    };
+
+    let raw = run_with_timeout(cmd, &effective_input, ctx, quota)?;
 
     let mut truncated = false;
     let mut pipe_data = Vec::new();
@@ -263,29 +270,46 @@ fn exec_simple(
 /// the dispatcher and the `help` command, so the two can never drift apart.
 /// `syntaxes` lists every accepted form of the command (including alternate
 /// spellings of the same command).
+pub type RunFn = fn(&SimpleCommand, &[u8], &Ctx, &Arc<DiskQuota>) -> Result<RawOutput, ExecError>;
+
 pub struct CommandSpec {
     pub name: &'static str,
     pub syntaxes: &'static [&'static str],
     pub summary: &'static str,
-    pub run: fn(&SimpleCommand, &Ctx, &Arc<DiskQuota>) -> Result<RawOutput, ExecError>,
+    pub run: RunFn,
 }
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "cat",
-        syntaxes: &["cat <path...>"],
+        syntaxes: &[
+            "cat <path...>",
+            "cat < <path>",
+            "cat <path...> > <path>",
+            "cat <path...> >> <path>",
+        ],
         summary: "print file contents (bounded read, globs allowed)",
         run: cat::run,
     },
     CommandSpec {
         name: "echo",
-        syntaxes: &["echo <text>", "echo <text> > <path>"],
+        syntaxes: &[
+            "echo <text>",
+            "echo <text> > <path>",
+            "echo <text> >> <path>",
+        ],
         summary: "print text, optionally redirected into a file",
         run: echo::run,
     },
     CommandSpec {
         name: "grep",
-        syntaxes: &["grep <pattern> <path...>", "grep <pattern> <path...> --all"],
+        syntaxes: &[
+            "grep <pattern> <path...>",
+            "grep <pattern> <path...> --all",
+            "grep <pattern> < <path>",
+            "grep <pattern> <path...> > <path>",
+            "grep <pattern> <path...> >> <path>",
+        ],
         summary: "search files (.gitignore respected unless --all)",
         run: grep::run,
     },
@@ -297,7 +321,12 @@ pub static COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "ls",
-        syntaxes: &["ls [path...]", "ls [path...] --all"],
+        syntaxes: &[
+            "ls [path...]",
+            "ls [path...] --all",
+            "ls [path...] > <path>",
+            "ls [path...] >> <path>",
+        ],
         summary: "list directory entries (.gitignore respected unless --all)",
         run: ls::run,
     },
@@ -332,12 +361,13 @@ pub static COMMANDS: &[CommandSpec] = &[
 
 fn dispatch(
     cmd: &SimpleCommand,
+    input: &[u8],
     ctx: &Ctx,
     quota: &Arc<DiskQuota>,
 ) -> Result<RawOutput, ExecError> {
     let name = cmd.argv[0].text.as_str();
     match COMMANDS.iter().find(|spec| spec.name == name) {
-        Some(spec) => (spec.run)(cmd, ctx, quota),
+        Some(spec) => (spec.run)(cmd, input, ctx, quota),
         None => Err(ExecError::Denied(format!("unknown command: {name}"))),
     }
 }
@@ -347,6 +377,7 @@ fn dispatch(
 /// running but stays capped by the per-file write bound and the shared quota.
 fn run_with_timeout(
     cmd: &SimpleCommand,
+    input: &[u8],
     ctx: &Ctx,
     quota: Arc<DiskQuota>,
 ) -> Result<RawOutput, ExecError> {
@@ -354,8 +385,9 @@ fn run_with_timeout(
     let (tx, rx) = std::sync::mpsc::channel();
     let owned = ctx.clone();
     let cmd = cmd.clone();
+    let input = input.to_vec();
     std::thread::spawn(move || {
-        let _ = tx.send(dispatch(&cmd, &owned, &quota));
+        let _ = tx.send(dispatch(&cmd, &input, &owned, &quota));
     });
     match rx.recv_timeout(timeout) {
         Ok(result) => result,
@@ -550,6 +582,62 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = run_cmd(&dir, "cat /etc/passwd").unwrap_err();
         assert!(matches!(err, ExecError::Denied(_)));
+    }
+
+    #[test]
+    fn stdin_redirect_feeds_file_content_to_cat() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.txt"), b"from-stdin\n").unwrap();
+        let out = run_cmd(&dir, "cat < in.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "from-stdin\n");
+    }
+
+    #[test]
+    fn stdin_redirect_denies_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = run_cmd(&dir, "cat < ../evil.txt").unwrap_err();
+        assert!(matches!(err, ExecError::Denied(_)));
+    }
+
+    #[test]
+    fn stdin_redirect_denies_absolute_outside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = run_cmd(&dir, "cat < /etc/passwd").unwrap_err();
+        assert!(matches!(err, ExecError::Denied(_)));
+    }
+
+    #[test]
+    fn stdin_redirect_denies_sensitive_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(".env"), b"SECRET=1").unwrap();
+        let resolver = Resolver::new(dir.path()).unwrap();
+        let sensibles = vec![regex::Regex::new(r".*\.env$").unwrap()];
+        let ctx = make_ctx(resolver, sensibles, vec![], DEFAULT_MAX_READ_BYTES);
+        let node = parse_input("cat < .env", &HashMap::new()).unwrap();
+        let err = execute(&node, &ctx).unwrap_err();
+        assert!(matches!(err, ExecError::Denied(_)));
+    }
+
+    #[test]
+    fn stdin_redirect_respects_read_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("big.txt"), vec![b'x'; 2048]).unwrap();
+        let resolver = Resolver::new(dir.path()).unwrap();
+        let ctx = make_ctx(resolver, vec![], vec![], 1024);
+        let node = parse_input("cat < big.txt", &HashMap::new()).unwrap();
+        let err = execute(&node, &ctx).unwrap_err();
+        assert!(matches!(err, ExecError::Limit(_)));
+    }
+
+    #[test]
+    fn stdin_redirect_overrides_pipe_input() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("override.txt"), b"file-wins\n").unwrap();
+        fs::write(dir.path().join("pipe.txt"), b"pipe-data\n").unwrap();
+        let out = run_cmd(&dir, "cat pipe.txt | cat < override.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "file-wins\n");
     }
 
     #[test]

@@ -15,8 +15,6 @@ pub enum ParseError {
     BackgroundAmpersand,
     #[error("operator '||' is not allowed")]
     OrOperator,
-    #[error("stdin redirection '<' is not supported in v1")]
-    RedirectInUnsupported,
     #[error("appending stderr ('2>>' / '&>>') is not supported in v1")]
     AppendStderrUnsupported,
     #[error("parentheses are only allowed as '$(VAR)' variable reference")]
@@ -70,6 +68,7 @@ pub struct Arg {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Redirect {
+    In { path: String },
     Out { path: String, append: bool },
     Err { path: String },
     ErrToOut,
@@ -128,6 +127,7 @@ enum Op {
     And,
     Semi,
     Pipe,
+    In,
     Out,
     Append,
     ErrOut,
@@ -277,7 +277,11 @@ fn lex(input: &str) -> Result<Vec<Tok>, ParseError> {
                     }
                 }
             }
-            '<' => return Err(ParseError::RedirectInUnsupported),
+            '<' => {
+                flush!();
+                tokens.push(Tok::Op(Op::In));
+                i += 1;
+            }
             '{' => {
                 if cur.ends_with('$') && !brace_var {
                     brace_var = true;
@@ -387,7 +391,7 @@ impl TokenParser<'_> {
                     self.pos += 1;
                     match op {
                         Op::ErrToOut => redirects.push(Redirect::ErrToOut),
-                        Op::Out | Op::Append | Op::ErrOut | Op::AllOut => {
+                        Op::In | Op::Out | Op::Append | Op::ErrOut | Op::AllOut => {
                             let Some(Tok::Word(raw)) = self.peek() else {
                                 return Err(ParseError::MissingRedirectTarget);
                             };
@@ -400,6 +404,7 @@ impl TokenParser<'_> {
                                 ));
                             }
                             redirects.push(match op {
+                                Op::In => Redirect::In { path },
                                 Op::Out => Redirect::Out {
                                     path,
                                     append: false,
@@ -443,7 +448,7 @@ impl TokenParser<'_> {
 fn is_redirect(op: Op) -> bool {
     matches!(
         op,
-        Op::Out | Op::Append | Op::ErrOut | Op::ErrToOut | Op::AllOut
+        Op::In | Op::Out | Op::Append | Op::ErrOut | Op::ErrToOut | Op::AllOut
     )
 }
 
@@ -643,6 +648,29 @@ mod tests {
     }
 
     #[test]
+    fn parses_stdin_redirection() {
+        let node = parse("cat < in.txt").unwrap();
+        let Node::Simple(cmd) = node else {
+            panic!("expected Simple");
+        };
+        assert_eq!(cmd.argv[0].text, "cat");
+        assert_eq!(
+            cmd.redirects,
+            vec![Redirect::In {
+                path: "in.txt".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn stdin_redirect_rejects_glob_target() {
+        assert!(matches!(
+            parse("cat < *.txt"),
+            Err(ParseError::InvalidGlob(_))
+        ));
+    }
+
+    #[test]
     fn parses_redirections() {
         let node = parse("echo hi > out.txt").unwrap();
         let Node::Simple(cmd) = node else {
@@ -798,10 +826,6 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_operators() {
-        assert!(matches!(
-            parse("ls < in.txt"),
-            Err(ParseError::RedirectInUnsupported)
-        ));
         assert!(matches!(parse("ls || cat"), Err(ParseError::OrOperator)));
         assert!(matches!(
             parse("ls &"),

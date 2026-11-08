@@ -12,6 +12,7 @@ struct Sub {
 
 pub(crate) fn run(
     cmd: &SimpleCommand,
+    _input: &[u8],
     ctx: &Ctx,
     quota: &Arc<crate::sink::DiskQuota>,
 ) -> Result<RawOutput, ExecError> {

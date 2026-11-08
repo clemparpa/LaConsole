@@ -12,6 +12,8 @@ struct Cli {
     root: PathBuf,
     #[arg(long, value_name = "N", default_value_t = la_console::commands::DEFAULT_COMMAND_TIMEOUT_SECS)]
     timeout_secs: u64,
+    #[arg(long, value_name = "N")]
+    max_output_bytes: Option<usize>,
     #[arg(long, value_name = "PATH")]
     trusted_file: Option<PathBuf>,
     #[arg(long, value_name = "HEX")]
@@ -28,6 +30,7 @@ fn main() {
     }
     let opts = la_console::console::Options {
         timeout_secs: cli.timeout_secs,
+        max_output_bytes: cli.max_output_bytes,
         trusted_file: cli.trusted_file,
         trusted_sha256: cli.trusted_sha256,
         sensibles_file: cli.sensibles_file,

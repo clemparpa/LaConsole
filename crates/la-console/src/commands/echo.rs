@@ -3,6 +3,7 @@ use crate::parse::SimpleCommand;
 
 pub(crate) fn run(
     cmd: &SimpleCommand,
+    _input: &[u8],
     _ctx: &Ctx,
     _quota: &std::sync::Arc<crate::sink::DiskQuota>,
 ) -> Result<RawOutput, ExecError> {

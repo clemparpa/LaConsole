@@ -14,7 +14,7 @@ et la console répond en JSON, une ligne par réponse sur stdout.
 ## Lancement et protocole
 
 ```
-la-console --root <chemin> [--timeout-secs N] [--trusted-file <chemin> --trusted-sha256 <hex>] [--sensitives-file <chemin>]
+la-console --root <chemin> [--timeout-secs N] [--max-output-bytes N] [--trusted-file <chemin> --trusted-sha256 <hex>] [--sensitives-file <chemin>]
 ```
 
 - Entrée : `{"op": "exec", "cmd": "ls src"}`
@@ -30,7 +30,7 @@ La console est stateless : chaque commande repart du `root`.
 ## Commandes disponibles
 
 Whitelist v1 (voir [ROADMAP.md](../ROADMAP.md)) :
-`cat <path...>`, `ls [path] [--all]`, `echo <text> [> path]`,
+`cat <path...>`, `ls [path] [--all]`, `echo <text> [> path | >> path]`,
 `grep <pattern> <path...> [--all]`, `sub <pattern> <repl> <path...>`,
 `sed [-i] s/<pat>/<repl>/[g] <path...>` (alias sed restreint : sans `-i` affiche
 le résultat sur stdout pour prévisualiser, avec `-i` réécrit les fichiers en

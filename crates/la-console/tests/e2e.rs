@@ -179,3 +179,108 @@ fn e2e_trusted_denied_when_not_configured() {
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }
+
+#[test]
+fn e2e_max_output_bytes_truncates_stdout() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--max-output-bytes")
+        .arg("10")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(
+        stdin,
+        r#"{{"op": "exec", "cmd": "echo hello world this is long"}}"#
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["truncated"], true);
+    assert!(resp["stdout"].as_str().unwrap().len() <= 10);
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn e2e_help_lists_append_syntax() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "help echo"}}"#).unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    let out = resp["stdout"].as_str().unwrap();
+    assert!(
+        out.contains("echo <text> >> <path>"),
+        "help echo missing >> syntax: {out}"
+    );
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn e2e_stdin_redirect_feeds_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("in.txt"), "hello from file\n").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "cat < in.txt"}}"#).unwrap();
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "cat < ../outside.txt"}}"#).unwrap();
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "grep from < in.txt"}}"#).unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "hello from file\n");
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    assert!(resp["stdout"].as_str().unwrap().contains("hello from file"));
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
