@@ -4,5 +4,9 @@
 # cargo mutants output
 mutants.out/
 
+# cargo-fuzz local outputs (seeds in fuzz/corpus/ are committed, artifacts are not)
+fuzz/target/
+fuzz/artifacts/
+
 # OS / editor
 .DS_Store
