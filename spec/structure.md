@@ -14,7 +14,7 @@ la-console/
       src/
         main.rs       # CLI clap : --root, bornes ; spawn du protocole JSON
         lib.rs        # #![forbid(unsafe_code)]
-        console.rs    # boucle protocole JSON stdin/stdout (tokio)
+        console.rs    # boucle protocole JSON stdin/stdout, synchrone (std::io, une requete a la fois)
         parse.rs      # parser shell cadré : shell-words + opérateurs whitelistés -> arbre de commandes
         resolve.rs    # resolve() : confinement root, unique point de passage
         commands/     # cat, ls, echo, grep, sub, http (whitelist)
@@ -45,13 +45,12 @@ la-console/
 | Besoin | Crate |
 |---|---|
 | Protocole JSON stdin/stdout | `serde`, `serde_json` |
-| Async + timeout par commande | `tokio` |
+| Timeout par commande | aucun crate : `std::thread` + `recv_timeout` |
 | `grep` dans des fichiers | `grep` (moteur ripgrep en lib) |
 | `ls` (respecte .gitignore, bornes) | `ignore` (walker ripgrep) |
 | Checksum sha256 des commandes trusted | `sha2` |
 | Regex des fichiers sensibles | `regex` (temps linéaire, pas de ReDoS) |
 | Limites mémoire/CPU/fichier du sous-processus trusted | `ulimit` appliqué par le shell lancé (pas de crate, pas d'`unsafe`) |
-| Logs structurés | `tracing`, `tracing-subscriber` |
 | Erreurs typées | `thiserror` |
 | CLI | `clap` |
 | Tokenisation shell (quotes, espaces) | `shell-words` |
@@ -64,3 +63,7 @@ Notes :
 
 - Spawn du sous-processus et pipes : `std::process` suffit, pas de crate.
 - Cœur sécurité (`resolve()`, parser whitelist) : **maison**, volontairement.
+- La console est volontairement **synchrone** : boucle `read_line` bloquante, une
+  requête à la fois, timeout par thread dédié, `reqwest` en mode `blocking`.
+  Pas de runtime async (`tokio` n'apparaît que comme dépendance transitive de
+  `reqwest`). Voir la discussion synchrone/asynchrone dans `ROADMAP.md`.
