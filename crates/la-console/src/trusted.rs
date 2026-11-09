@@ -205,6 +205,12 @@ pub(crate) fn run(
     ctx: &Ctx,
     _quota: &Arc<DiskQuota>,
 ) -> Result<RawOutput, ExecError> {
+    if ctx.sandboxed {
+        return Err(ExecError::Denied(
+            "trusted commands are not available in server mode (no shell inside the chroot)"
+                .to_string(),
+        ));
+    }
     let Some(registry) = ctx.trusted.as_ref() else {
         return Err(ExecError::Denied(
             "trusted commands are not configured (--trusted-file)".to_string(),
@@ -362,6 +368,7 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted,
+            sandboxed: false,
         }
     }
 
@@ -452,6 +459,17 @@ mod tests {
         let ctx = ctx_with(&dir, None);
         let err = run_cmd(&ctx, "trusted build").unwrap_err();
         assert!(matches!(err, ExecError::Denied(m) if m.contains("not configured")));
+    }
+
+    #[test]
+    fn run_is_denied_in_sandboxed_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "build = true\n";
+        let (_trusted_dir, registry) = registry_for(dir.path(), content, Some(sha_of(content)));
+        let mut ctx = ctx_with(&dir, Some(registry));
+        ctx.sandboxed = true;
+        let err = run_cmd(&ctx, "trusted build").unwrap_err();
+        assert!(matches!(err, ExecError::Denied(m) if m.contains("server mode")));
     }
 
     #[test]

@@ -32,6 +32,8 @@ pub struct Options {
     pub trusted_file: Option<PathBuf>,
     pub trusted_sha256: Option<String>,
     pub sensibles_file: Option<PathBuf>,
+    /// True when running inside the server-mode sandbox (userns + chroot).
+    pub sandboxed: bool,
 }
 
 impl Default for Options {
@@ -42,6 +44,7 @@ impl Default for Options {
             trusted_file: None,
             trusted_sha256: None,
             sensibles_file: None,
+            sandboxed: false,
         }
     }
 }
@@ -58,13 +61,16 @@ pub fn run<R: BufRead, W: Write>(
         Some(path) => crate::sink::load_sensibles(path)?,
         None => Vec::new(),
     };
-    let trusted = match &opts.trusted_file {
-        Some(path) => Some(
+    // In server mode the chroot contains no shell, so trusted commands are
+    // refused anyway; skip loading the registry (its HOME check would also
+    // fail inside the cage, where every path is under the root).
+    let trusted = match (&opts.trusted_file, opts.sandboxed) {
+        (Some(path), false) => Some(
             TrustedRegistry::load(path, opts.trusted_sha256.clone(), resolver.root()).map_err(
                 |err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()),
             )?,
         ),
-        None => None,
+        _ => None,
     };
     let limits = Limits {
         command_timeout_secs: opts.timeout_secs,
@@ -79,6 +85,7 @@ pub fn run<R: BufRead, W: Write>(
         secrets: Vec::new(),
         limits,
         trusted,
+        sandboxed: opts.sandboxed,
     };
     let mut line = String::new();
     loop {

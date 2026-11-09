@@ -192,6 +192,7 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted: None,
+            sandboxed: false,
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)

@@ -69,8 +69,15 @@
 
 La v1 est Unix-only (Linux + macOS), documenté.
 
+## v2 — étape 1 : confinement noyau en déploiement serveur ✅ (cette PR)
+
+- `--mode user|server` (défaut `user`) : `user` tourne partout (macOS + Linux poste utilisateur, confinement pur Rust v1) ; `server` est **Linux-only** et re-exec le binaire dans `unshare --user --map-root-user --mount --root <root> --wd /` (user namespace non privilégié + chroot, defense in depth). Hors Linux, `--mode server` est refusé fail-closed (exit 2).
+- Le binaire (et ses dépendances dynamiques, via `ldd`) est d'abord copié dans la cage puis nettoyé au démarrage ; dans la cage, `--root /`. Marqueur `--inside-sandbox` + env anti-boucle. Zéro `unsafe` (`#![forbid(unsafe_code)]` intact).
+- **Déploiement** : lancer la console comme l'utilisateur propriétaire du `root` — les permissions Unix s'appliquent toujours dans le userns, jamais de root global.
+- **Commandes `trusted` indisponibles en mode serveur** (pas de `/bin/sh` dans la cage) → `denied` ; mini-image équipée (busybox statique) prévue plus tard.
+- **Testable** : tests unitaires (`sandbox.rs`), e2e Linux (cage + évasion `..` + `trusted` refusé) et e2e de refus hors Linux.
+
 ## v2 (backlog)
 
 - **Plugins et responsabilité d'exécution** (discussion ouverte) : concevoir un mécanisme de « plugins » (ex. module lançant des OCI) et répartir les responsabilités — le harnais de l'agent déclare la politique (fichiers revus par l'humain, épinglés par sha256, comme `trusted.txt`), mais la console conserve la validation, le confinement, les limites et le kill de l'exécution (jamais délégués au harnais).
 - **Support Windows** (discussion ouverte) : le code v1 est Unix-only (`std::os::unix` pour `st_dev`/`st_ino` dans `resolve.rs`, `symlink` dans les tests, `/bin/sh` + `ulimit` dans `trusted.rs`). Porter sur Windows via une couche d'abstraction des primitives plateforme (hardlink, symlink, shell, limites) — chaque plateforme ajoutée est une nouvelle surface d'attaque à auditer.
-- **User namespace + chroot** (voir `spec/security.md`) : defense in depth côté console pour le déploiement serveur.

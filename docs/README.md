@@ -14,8 +14,16 @@ et la console répond en JSON, une ligne par réponse sur stdout.
 ## Lancement et protocole
 
 ```
-la-console --root <chemin> [--timeout-secs N] [--max-output-bytes N] [--trusted-file <chemin> --trusted-sha256 <hex>] [--sensitives-file <chemin>]
+la-console --root <chemin> [--mode user|server] [--timeout-secs N] [--max-output-bytes N] [--trusted-file <chemin> --trusted-sha256 <hex>] [--sensibles-file <chemin>]
 ```
+
+Deux modes de déploiement (voir [spec/security.md](../spec/security.md)) :
+`--mode user` (défaut) tourne partout, macOS compris, avec le confinement pur
+Rust ; `--mode server` (Linux uniquement) re-exécute la console dans un user
+namespace non privilégié + chroot (`unshare`), pour un déploiement serveur —
+refusé proprement (exit 2) sur les autres plateformes. En mode serveur, les
+commandes `trusted` sont indisponibles (pas de shell dans la cage) et la
+console doit tourner comme l'utilisateur propriétaire du `root`.
 
 - Entrée : `{"op": "exec", "cmd": "ls src"}`
 - Sortie : `{"ok": true, "code": 0, "stdout": "...", "stderr": "", "truncated": false}`
