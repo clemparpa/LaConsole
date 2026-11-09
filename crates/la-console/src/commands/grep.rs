@@ -259,6 +259,7 @@ mod tests {
             limits: Limits::default(),
             trusted: None,
             sandboxed: false,
+            sandbox_shell: None,
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
@@ -332,6 +333,7 @@ mod tests {
             limits: Limits::default(),
             trusted: None,
             sandboxed: false,
+            sandbox_shell: None,
         };
         let node = parse_input("grep SECRET .env", &HashMap::new()).unwrap();
         assert!(matches!(
@@ -355,6 +357,7 @@ mod tests {
             },
             trusted: None,
             sandboxed: false,
+            sandbox_shell: None,
         };
         let node = parse_input("grep a big.txt", &HashMap::new()).unwrap();
         assert!(matches!(

@@ -370,6 +370,150 @@ fn e2e_server_mode_runs_inside_chroot() {
     assert!(child.wait().unwrap().success());
 }
 
+/// Finds a statically linked busybox on the host (env override
+/// `LA_CONSOLE_TEST_BUSYBOX` first), or `None` when unavailable.
+#[cfg(target_os = "linux")]
+fn find_static_busybox() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(p) = std::env::var_os("LA_CONSOLE_TEST_BUSYBOX") {
+        candidates.push(PathBuf::from(p));
+    }
+    if let Ok(p) = std::env::var("PATH") {
+        for dir in p.split(':') {
+            candidates.push(PathBuf::from(dir).join("busybox"));
+        }
+    }
+    candidates.extend(
+        [
+            "/bin/busybox",
+            "/usr/bin/busybox",
+            "/sbin/busybox",
+            "/usr/sbin/busybox",
+        ]
+        .iter()
+        .map(PathBuf::from),
+    );
+    candidates.into_iter().find(|c| {
+        if !c.is_file() {
+            return false;
+        }
+        let Ok(out) = Command::new("ldd").arg(c).output() else {
+            return false;
+        };
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        text.contains("not a dynamic executable")
+    })
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn e2e_server_mode_stages_tools_dir_into_cage() {
+    if !unshare_works() {
+        eprintln!("skipping: unprivileged user namespaces unavailable in this environment");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let tools = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tools.path().join("bin")).unwrap();
+    std::fs::write(tools.path().join("bin/mytool"), b"#!/bin/sh\necho tool\n").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--mode")
+        .arg("server")
+        .arg("--sandbox-tools-dir")
+        .arg(tools.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(
+        stdin,
+        r#"{{"op": "exec", "cmd": "ls opt/la-console-tools/bin"}}"#
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    assert!(
+        resp["stdout"].as_str().unwrap().contains("mytool"),
+        "stdout: {}",
+        resp["stdout"]
+    );
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn e2e_server_mode_trusted_runs_through_staged_busybox() {
+    if !unshare_works() {
+        eprintln!("skipping: unprivileged user namespaces unavailable in this environment");
+        return;
+    }
+    let Some(busybox) = find_static_busybox() else {
+        eprintln!("skipping: no statically linked busybox found on this host");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let content = "hello = echo hi-from-busybox\n";
+    std::fs::write(dir.path().join("trusted.txt"), content).unwrap();
+    let sha = la_console::trusted::sha256_hex(content.as_bytes());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--mode")
+        .arg("server")
+        .arg("--sandbox-busybox")
+        .arg(&busybox)
+        .arg("--trusted-file")
+        .arg("trusted.txt")
+        .arg("--trusted-sha256")
+        .arg(&sha)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "trusted hello"}}"#).unwrap();
+    writeln!(
+        stdin,
+        r#"{{"op": "exec", "cmd": "cat ../outside-secret.txt"}}"#
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true, "resp: {resp}");
+    assert_eq!(resp["stdout"], "hi-from-busybox\n");
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn e2e_server_mode_denies_trusted() {

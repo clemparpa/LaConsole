@@ -193,6 +193,7 @@ mod tests {
             limits: Limits::default(),
             trusted: None,
             sandboxed: false,
+            sandbox_shell: None,
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)

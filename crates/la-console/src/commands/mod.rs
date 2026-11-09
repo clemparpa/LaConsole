@@ -65,9 +65,12 @@ pub struct Ctx {
     pub secrets: Vec<String>,
     pub limits: Limits,
     pub trusted: Option<crate::trusted::TrustedRegistry>,
-    /// True when running inside the server-mode sandbox (userns + chroot),
-    /// where no system shell exists: trusted commands are refused.
+    /// True when running inside the server-mode sandbox (userns + chroot).
     pub sandboxed: bool,
+    /// In-cage busybox path when one was staged (`--sandbox-busybox`):
+    /// trusted commands run through `<busybox> sh -c` in server mode. Without
+    /// it, trusted commands are refused (fail-closed).
+    pub sandbox_shell: Option<String>,
 }
 
 /// Structured classification of an execution error, serialized into the
@@ -553,6 +556,7 @@ mod tests {
             },
             trusted: None,
             sandboxed: false,
+            sandbox_shell: None,
         }
     }
 
@@ -761,6 +765,7 @@ mod bound_tests {
             limits,
             trusted: None,
             sandboxed: false,
+            sandbox_shell: None,
         }
     }
 
@@ -882,6 +887,7 @@ mod helper_tests {
             limits,
             trusted: None,
             sandboxed: false,
+            sandbox_shell: None,
         }
     }
 

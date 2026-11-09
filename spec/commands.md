@@ -84,3 +84,10 @@ sensibles**, même après expansion de glob ou substitution de variable.
   RLIMIT_AS n'existe pas sur macOS/BSD) : les limites ne touchent que le
   sous-processus, jamais le processus console (pas de `setrlimit` global, donc
   pas besoin de `unsafe`/`pre_exec`).
+- **Mode serveur** (voir [security.md](security.md)) : la cage ne contient pas de
+  `/bin/sh` système ; si un busybox statique a été stagé
+  (`--sandbox-busybox`), `trusted` s'exécute via `<busybox> sh -c` avec
+  `PATH = /bin:/opt/la-console-tools/bin:/opt/la-console-tools/go/bin`,
+  `HOME=/tmp`, `LD_LIBRARY_PATH` vers les libs stagées et `GOROOT` détecté si
+  une toolchain go est dans `/opt/la-console-tools`. Sans busybox stagé,
+  `trusted` = `denied` (fail-closed).

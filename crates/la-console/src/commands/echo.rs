@@ -46,6 +46,7 @@ mod tests {
             },
             trusted: None,
             sandboxed: false,
+            sandbox_shell: None,
         }
     }
 
