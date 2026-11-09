@@ -65,6 +65,9 @@ pub struct Ctx {
     pub secrets: Vec<String>,
     pub limits: Limits,
     pub trusted: Option<crate::trusted::TrustedRegistry>,
+    /// True when running inside the server-mode sandbox (userns + chroot),
+    /// where no system shell exists: trusted commands are refused.
+    pub sandboxed: bool,
 }
 
 /// Structured classification of an execution error, serialized into the
@@ -549,6 +552,7 @@ mod tests {
                 ..Limits::default()
             },
             trusted: None,
+            sandboxed: false,
         }
     }
 
@@ -756,6 +760,7 @@ mod bound_tests {
             secrets: vec![],
             limits,
             trusted: None,
+            sandboxed: false,
         }
     }
 
@@ -876,6 +881,7 @@ mod helper_tests {
             secrets,
             limits,
             trusted: None,
+            sandboxed: false,
         }
     }
 

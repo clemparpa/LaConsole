@@ -7,11 +7,16 @@ qui la pilote). L'isolation par processus garantit qu'un crash de la console
 (ex. lecture d'un très gros fichier) n'affecte pas l'appelant.
 
 ```
-la-console --root <chemin> [--max-output-bytes N] [--timeout-secs N] [--trusted-file <chemin>] [--sensitives-file <chemin>]
+la-console --root <chemin> [--mode user|server] [--max-output-bytes N] [--timeout-secs N] [--trusted-file <chemin>] [--sensibles-file <chemin>]
 ```
 
 - `--root` : répertoire racine du confinement, résolu en chemin canonique
   **une seule fois** au démarrage (`std::fs::canonicalize`).
+- `--mode` : `user` (défaut, macOS + Linux poste utilisateur : confinement pur
+  Rust) ou `server` (Linux uniquement : re-exec dans un user namespace non
+  privilégié + chroot, voir [security.md](security.md)). Sur une plateforme
+  non Linux, `--mode server` est refusé (exit 2). Flag interne caché
+  `--inside-sandbox` : posé par le re-exec pour empêcher une boucle.
 - `--max-output-bytes` : borne de troncature des sorties (défaut raisonnable,
   ex. 1 Mo).
 - `--timeout-secs` : timeout par commande (défaut ex. 30 s).

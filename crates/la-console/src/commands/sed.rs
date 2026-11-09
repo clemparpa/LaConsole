@@ -220,6 +220,7 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted: None,
+            sandboxed: false,
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
@@ -398,6 +399,7 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted: None,
+            sandboxed: false,
         };
         let node = parse_input(r#"sed -i "s/A/B/" .env"#, &HashMap::new()).unwrap();
         assert!(matches!(
@@ -424,6 +426,7 @@ mod tests {
                 ..Limits::default()
             },
             trusted: None,
+            sandboxed: false,
         };
         let node = parse_input(r#"sed "s/a/b/g" big.txt"#, &HashMap::new()).unwrap();
         assert!(matches!(

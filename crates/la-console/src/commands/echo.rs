@@ -45,6 +45,7 @@ mod tests {
                 ..Limits::default()
             },
             trusted: None,
+            sandboxed: false,
         }
     }
 

@@ -284,3 +284,130 @@ fn e2e_stdin_redirect_feeds_file() {
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn e2e_server_mode_is_refused_off_linux() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--mode")
+        .arg("server")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("requires Linux"), "stderr: {stderr}");
+}
+
+#[cfg(target_os = "linux")]
+fn unshare_works() -> bool {
+    Command::new("unshare")
+        .args([
+            "--user",
+            "--map-root-user",
+            "--mount",
+            "--root",
+            "/",
+            "--wd",
+            "/",
+        ])
+        .arg("/bin/true")
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn e2e_server_mode_runs_inside_chroot() {
+    if !unshare_works() {
+        eprintln!("skipping: unprivileged user namespaces unavailable in this environment");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("hello.txt"), "hello-from-cage\n").unwrap();
+    std::fs::write(
+        dir.path().parent().unwrap().join("outside-secret.txt"),
+        "topsecret\n",
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--mode")
+        .arg("server")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "cat hello.txt"}}"#).unwrap();
+    writeln!(
+        stdin,
+        r#"{{"op": "exec", "cmd": "cat ../outside-secret.txt"}}"#
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "hello-from-cage\n");
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn e2e_server_mode_denies_trusted() {
+    if !unshare_works() {
+        eprintln!("skipping: unprivileged user namespaces unavailable in this environment");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let content = "hello = echo hi\n";
+    std::fs::write(dir.path().join("trusted.txt"), content).unwrap();
+    let sha = la_console::trusted::sha256_hex(content.as_bytes());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--mode")
+        .arg("server")
+        .arg("--trusted-file")
+        .arg("trusted.txt")
+        .arg("--trusted-sha256")
+        .arg(&sha)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "trusted hello"}}"#).unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+    assert!(resp["stderr"].as_str().unwrap().contains("server mode"));
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}

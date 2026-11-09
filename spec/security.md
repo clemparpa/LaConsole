@@ -30,10 +30,23 @@ sur disque, et empêcher qu'une sortie contamine l'interprétation côté appela
 - **v1 : logique pur Rust** (`resolve()` + canonicalize + tests d'évasion en CI),
   marche partout sans privilèges. Un bug dans `resolve()` = évasion totale, donc
   tests agressifs obligatoires.
-- **v2 (déploiement serveur) : user namespace non privilégié + chroot** par-dessus
-  (defense in depth : le noyau bloque même en cas de bug applicatif).
-  L'API reste identique, seul le lanceur change. Jamais de root global au
-  lancement.
+- **v2 (déploiement serveur) : `--mode server`, Linux uniquement** — user namespace
+  non privilégié + chroot par-dessus (defense in depth : le noyau bloque même
+  en cas de bug applicatif). Le binaire se re-exec lui-même via
+  `unshare --user --map-root-user --mount --root <root> --wd /` (le binaire et
+  ses dépendances dynamiques sont d'abord copiés dans la cage, puis nettoyés
+  au démarrage ; un binaire statique n'en a pas besoin). L'API reste identique,
+  seul le lanceur change : dans la cage, `--root /`. Jamais de root global au
+  lancement. Sur macOS/autre, `--mode server` est refusé (exit 2) et `--mode user`
+  reste le défaut.
+  - **Déploiement** : lancer la console comme l'utilisateur propriétaire du
+    `root` (les permissions Unix/DAC s'appliquent toujours dans le user
+    namespace : un fichier appartenant à un autre utilisateur reste illisible,
+    même dans la cage). Ne jamais lancer en root global.
+  - **Commandes trusted indisponibles en mode serveur** : la cage ne contient
+    pas de `/bin/sh`, donc `trusted` répond `denied` (le registre n'est même pas
+    chargé). En attendant une mini-image de cage équipée (busybox statique),
+    seules les commandes whitelistées tournent en mode serveur.
 
 ## Fichiers sensibles
 

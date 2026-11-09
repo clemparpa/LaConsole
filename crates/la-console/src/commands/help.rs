@@ -89,6 +89,7 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted,
+            sandboxed: false,
         }
     }
 
