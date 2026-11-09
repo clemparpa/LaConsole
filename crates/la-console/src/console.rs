@@ -34,6 +34,9 @@ pub struct Options {
     pub sensibles_file: Option<PathBuf>,
     /// True when running inside the server-mode sandbox (userns + chroot).
     pub sandboxed: bool,
+    /// In-cage busybox path (e.g. "/bin/busybox") when one was staged with
+    /// `--sandbox-busybox`; trusted commands run through it in server mode.
+    pub sandbox_shell: Option<String>,
 }
 
 impl Default for Options {
@@ -45,6 +48,7 @@ impl Default for Options {
             trusted_sha256: None,
             sensibles_file: None,
             sandboxed: false,
+            sandbox_shell: None,
         }
     }
 }
@@ -61,16 +65,21 @@ pub fn run<R: BufRead, W: Write>(
         Some(path) => crate::sink::load_sensibles(path)?,
         None => Vec::new(),
     };
-    // In server mode the chroot contains no shell, so trusted commands are
-    // refused anyway; skip loading the registry (its HOME check would also
-    // fail inside the cage, where every path is under the root).
-    let trusted = match (&opts.trusted_file, opts.sandboxed) {
-        (Some(path), false) => Some(
-            TrustedRegistry::load(path, opts.trusted_sha256.clone(), resolver.root()).map_err(
-                |err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()),
-            )?,
+    // In server mode the registry is loaded like in user mode; trusted
+    // execution itself is gated on the staged busybox (ctx.sandbox_shell).
+    let trusted = match &opts.trusted_file {
+        Some(path) => Some(
+            TrustedRegistry::load(
+                path,
+                opts.trusted_sha256.clone(),
+                resolver.root(),
+                opts.sandboxed,
+            )
+            .map_err(|err| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
+            })?,
         ),
-        _ => None,
+        None => None,
     };
     let limits = Limits {
         command_timeout_secs: opts.timeout_secs,
@@ -86,6 +95,7 @@ pub fn run<R: BufRead, W: Write>(
         limits,
         trusted,
         sandboxed: opts.sandboxed,
+        sandbox_shell: opts.sandbox_shell.clone(),
     };
     let mut line = String::new();
     loop {

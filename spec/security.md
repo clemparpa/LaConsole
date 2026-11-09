@@ -43,10 +43,26 @@ sur disque, et empêcher qu'une sortie contamine l'interprétation côté appela
     `root` (les permissions Unix/DAC s'appliquent toujours dans le user
     namespace : un fichier appartenant à un autre utilisateur reste illisible,
     même dans la cage). Ne jamais lancer en root global.
-  - **Commandes trusted indisponibles en mode serveur** : la cage ne contient
-    pas de `/bin/sh`, donc `trusted` répond `denied` (le registre n'est même pas
-    chargé). En attendant une mini-image de cage équipée (busybox statique),
-    seules les commandes whitelistées tournent en mode serveur.
+  - **Mini-image de cage (v2 étape 2)** : l'opérateur peut équiper la cage via
+    `--sandbox-busybox <PATH>` (busybox **statique**, vérifié ELF + `ldd`,
+    épinglable par `--sandbox-busybox-sha256`) et `--sandbox-tools-dir <DIR>`
+    (outillage ex. git + go, copié en `/opt/la-console-tools` avec les deps
+    dynamiques de chaque ELF). Le busybox est placé en `/bin/busybox` avec un
+    symlink par applet dans `/bin`. Au démarrage dans la cage, `/bin`,
+    `/opt/la-console-tools` et le dossier de libs stagées sont remountés
+    **read-only** (bind + remount,ro via l'applet `mount` de busybox, possible
+    car le processus est root dans son propre user namespace) pour empêcher
+    l'agent d'écraser un outil via une écriture whitelist (tout le contenu du
+    chroot est sinon accessible en écriture sous le root).
+  - **Commandes trusted en mode serveur** : avec un busybox stagé, `trusted`
+    s'exécute via `<busybox> sh -c` (`PATH` cage, `HOME=/tmp`, `GOROOT` détecté
+    si présent, limites `ulimit` identiques au mode user). **Sans busybox
+    stagé, `trusted` reste `denied` (fail-closed)** et seules les commandes
+    whitelistées tournent en mode serveur.
+  - **Réseau** : la cage partage le namespace réseau de l'hôte (pas de
+    `--net`) pour garder la commande `http` vers localhost ; une commande
+    trusted peut donc joindre le réseau, comme en mode user — le périmètre
+    reste le chroot, pas le réseau.
 
 ## Fichiers sensibles
 

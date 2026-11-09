@@ -14,16 +14,22 @@ et la console répond en JSON, une ligne par réponse sur stdout.
 ## Lancement et protocole
 
 ```
-la-console --root <chemin> [--mode user|server] [--timeout-secs N] [--max-output-bytes N] [--trusted-file <chemin> --trusted-sha256 <hex>] [--sensibles-file <chemin>]
+la-console --root <chemin> [--mode user|server] [--timeout-secs N] [--max-output-bytes N] [--trusted-file <chemin> --trusted-sha256 <hex>] [--sensibles-file <chemin>] [--sandbox-busybox <chemin> [--sandbox-busybox-sha256 <hex>]] [--sandbox-tools-dir <dir>]
 ```
 
 Deux modes de déploiement (voir [spec/security.md](../spec/security.md)) :
 `--mode user` (défaut) tourne partout, macOS compris, avec le confinement pur
 Rust ; `--mode server` (Linux uniquement) re-exécute la console dans un user
 namespace non privilégié + chroot (`unshare`), pour un déploiement serveur —
-refusé proprement (exit 2) sur les autres plateformes. En mode serveur, les
-commandes `trusted` sont indisponibles (pas de shell dans la cage) et la
-console doit tourner comme l'utilisateur propriétaire du `root`.
+refusé proprement (exit 2) sur les autres plateformes. La console doit tourner
+comme l'utilisateur propriétaire du `root`.
+
+En mode serveur, la cage peut être équipée d'une mini-image (v2 étape 2) :
+`--sandbox-busybox` (busybox statique, épinglable par sha256) placé en
+`/bin/busybox` avec ses applets, et `--sandbox-tools-dir` (ex. git + go) copié
+en `/opt/la-console-tools` ; `/bin` et l'outillage sont remontés read-only au
+démarrage. Avec un busybox stagé, les commandes `trusted` tournent via
+`busybox sh -c` ; sans busybox, elles restent indisponibles (`denied`).
 
 - Entrée : `{"op": "exec", "cmd": "ls src"}`
 - Sortie : `{"ok": true, "code": 0, "stdout": "...", "stderr": "", "truncated": false}`

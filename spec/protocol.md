@@ -7,7 +7,7 @@ qui la pilote). L'isolation par processus garantit qu'un crash de la console
 (ex. lecture d'un très gros fichier) n'affecte pas l'appelant.
 
 ```
-la-console --root <chemin> [--mode user|server] [--max-output-bytes N] [--timeout-secs N] [--trusted-file <chemin>] [--sensibles-file <chemin>]
+la-console --root <chemin> [--mode user|server] [--max-output-bytes N] [--timeout-secs N] [--trusted-file <chemin>] [--sensibles-file <chemin>] [--sandbox-busybox <chemin> [--sandbox-busybox-sha256 <hex>]] [--sandbox-tools-dir <dir>]
 ```
 
 - `--root` : répertoire racine du confinement, résolu en chemin canonique
@@ -24,6 +24,13 @@ la-console --root <chemin> [--mode user|server] [--max-output-bytes N] [--timeou
   [commands.md](commands.md)). Optionnel.
 - `--sensitives-file` : chemin du fichier de regex de fichiers sensibles.
   Optionnel.
+- `--sandbox-busybox` : mode serveur uniquement — chemin d'un busybox
+  **statique** (vérifié ELF + `ldd`) stagé dans la cage en `/bin/busybox` pour
+  permettre l'exécution des commandes `trusted` via `busybox sh` ; épinglable
+  par `--sandbox-busybox-sha256 <hex>`. Sans busybox stagé, `trusted` = `denied`.
+- `--sandbox-tools-dir` : mode serveur uniquement — répertoire d'outillage
+  (git, toolchain go, ...) copié dans la cage en `/opt/la-console-tools`, avec
+  les dépendances dynamiques de chaque binaire ELF (loader + libs).
 
 ## Protocole de transport : ligne par ligne sur stdin/stdout
 

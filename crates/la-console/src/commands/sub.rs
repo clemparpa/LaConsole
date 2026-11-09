@@ -70,6 +70,7 @@ mod tests {
             limits: Limits::default(),
             trusted: None,
             sandboxed: false,
+            sandbox_shell: None,
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
@@ -129,6 +130,7 @@ mod tests {
             limits: Limits::default(),
             trusted: None,
             sandboxed: false,
+            sandbox_shell: None,
         };
         let node = parse_input("sub A B .env", &HashMap::new()).unwrap();
         assert!(matches!(
@@ -156,6 +158,7 @@ mod tests {
             },
             trusted: None,
             sandboxed: false,
+            sandbox_shell: None,
         };
         let node = parse_input("sub a b big.txt", &HashMap::new()).unwrap();
         assert!(matches!(
@@ -201,6 +204,7 @@ mod tests {
             limits: Limits::default(),
             trusted: None,
             sandboxed: false,
+            sandbox_shell: None,
         };
         let node = parse_input("sub key value a.txt", &HashMap::new()).unwrap();
         let out = execute(&node, &ctx).unwrap();

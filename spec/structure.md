@@ -12,13 +12,14 @@ la-console/
     la-console/       # la fausse console (binaire + lib)
       Cargo.toml
       src/
-        main.rs       # CLI clap : --root, bornes ; spawn du protocole JSON
+        main.rs       # CLI clap : --root, bornes, --mode, image de cage (--sandbox-busybox/--sandbox-tools-dir) ; spawn du protocole JSON
         lib.rs        # #![forbid(unsafe_code)]
         console.rs    # boucle protocole JSON stdin/stdout, synchrone (std::io, une requete a la fois)
         parse.rs      # parser shell cadré : shell-words + opérateurs whitelistés -> arbre de commandes
         resolve.rs    # resolve() : confinement root, unique point de passage
         commands/     # cat, ls, echo, grep, sub, http (whitelist)
-        trusted.rs    # commandes trusted : parsing + wrapping + checksum + scan + exécution
+        trusted.rs    # commandes trusted : parsing + wrapping + checksum + scan + exécution (/bin/sh en mode user, busybox sh dans la cage en mode server)
+        sandbox.rs    # mode serveur : unshare userns+chroot, staging du binaire/libs, mini-image de cage (busybox + outillage)
         sink.rs       # trait Sink + FileSink / CallerSink / PipeSink
       tests/
         evasion.rs    # tests d'évasion (.., symlinks, absolus, unicode...)

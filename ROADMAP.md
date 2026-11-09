@@ -77,6 +77,13 @@ La v1 est Unix-only (Linux + macOS), documenté.
 - **Commandes `trusted` indisponibles en mode serveur** (pas de `/bin/sh` dans la cage) → `denied` ; mini-image équipée (busybox statique) prévue plus tard.
 - **Testable** : tests unitaires (`sandbox.rs`), e2e Linux (cage + évasion `..` + `trusted` refusé) et e2e de refus hors Linux.
 
+## v2 — étape 2 : mini-image de cage (busybox statique + outillage) 🚧 (cette PR)
+
+- Nouveaux flags (mode serveur uniquement, consommés avant le re-exec) : `--sandbox-busybox <PATH>` (busybox **statique** fourni par l'opérateur, vérifié ELF + statique via `ldd`, épinglable par `--sandbox-busybox-sha256 <hex>`) et `--sandbox-tools-dir <DIR>` (ex. git + toolchain go) copié dans la cage en `/opt/la-console-tools` avec les dépendances dynamiques de chaque binaire ELF (`ldd` : loader + libs).
+- Le busybox est copié en `/bin/busybox` (0555) avec un symlink par applet dans `/bin` (`busybox --list`) : `trusted` fonctionne en mode serveur via `<busybox> sh -c`, `PATH = /bin:/opt/la-console-tools/bin:/opt/la-console-tools/go/bin`, `HOME=/tmp`, `GOROOT` détecté si présent. Sans `--sandbox-busybox`, `trusted` reste `denied` (fail-closed).
+- Defense in depth : au démarrage dans la cage, `/bin`, `/opt/la-console-tools` et le dossier de libs stagées sont remountés read-only (bind + remount,ro via l'applet `mount` de busybox ; le processus est root dans son propre user namespace, le remount ne fuite pas sur l'hôte) pour empêcher l'agent d'écraser un outil via une écriture whitelist.
+- **Testable** : tests unitaires du staging (refus busybox dynamique/non-ELF/sha faux, copie de l'outillage + deps ELF, symlinks d'applets), tests `trusted` en cage via faux busybox, e2e Linux (outillage visible dans la cage, `trusted` via vrai busybox statique quand disponible, `trusted` toujours refusé sans busybox).
+
 ## v2 (backlog)
 
 - **Synchrone vs asynchrone (discussion ouverte)** : l'implémentation actuelle est volontairement 100 % synchrone — boucle `read_line` bloquante dans `console.rs` (une requête à la fois), timeout par commande via `std::thread` + `recv_timeout` (`run_with_timeout`), `reqwest` en mode `blocking` pour `http`. `tokio` n'est présent que comme dépendance transitive de `reqwest`, jamais en direct. La spec reflète ce choix (`spec/structure.md`). Discussion à avoir : faut-il un runtime async (concurrence de requêtes, I/O non bloquantes) ? Trade-off : une runtime async ajoute de la complexité et de la surface d'attaque (état partagé, tâches en parallèle soumises aux mêmes bornes) pour un gain de débit incertain, le protocole étant ligne par ligne et mono-appelant. Position actuelle : rester synchrone tant qu'aucun besoin mesuré ne justifie le changement.
