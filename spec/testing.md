@@ -57,7 +57,10 @@ Deux niveaux, selon le coût :
   `clippy -D warnings`, `cargo test` complet (matrice ubuntu + macOS, car
   `resolve()` dépend du filesystem), `llvm-cov` avec seuil, `deny`/`audit`,
   **fuzz borné ~5 min** sur parser + `resolve()`. Les tests d'évasion sont
-  obligatoires avant merge.
+  obligatoires avant merge. Sur le runner ubuntu, le job installe
+  `busybox-static` (`/bin/busybox` statique) pour que le test e2e de la cage
+  serveur avec un vrai busybox s'exécute au lieu de skipper ; sans busybox
+  statique sur la machine hôte, ce test se skippe (comportement voulu).
 - **Nightly** : fuzz long (30 min+) et `cargo mutants` avec seuil de score sur
   les mutants survivants. Sur un dépôt **public**, les runners hosted sont
   gratuits ; sur un dépôt **privé**, ces jobs chers peuvent tourner sur un

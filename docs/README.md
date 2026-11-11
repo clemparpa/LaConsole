@@ -28,7 +28,7 @@ En mode serveur, la cage peut être équipée d'une mini-image (v2 étape 2) :
 `--sandbox-busybox` (busybox statique, épinglable par sha256) placé en
 `/bin/busybox` avec ses applets, et `--sandbox-tools-dir` (ex. git + go) copié
 en `/opt/la-console-tools` ; `/bin` et l'outillage sont remontés read-only au
-démarrage. Avec un busybox stagé, les commandes `trusted` tournent via
+démarrage (échec = exit 2, fail-closed). Avec un busybox stagé, les commandes `trusted` tournent via
 `busybox sh -c` ; sans busybox, elles restent indisponibles (`denied`).
 
 - Entrée : `{"op": "exec", "cmd": "ls src"}`

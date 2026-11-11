@@ -51,6 +51,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
+      # Static busybox at /bin/busybox so the server-mode cage e2e test
+      # (Linux-only) runs for real instead of skipping. apt is ubuntu-only.
+      - name: install static busybox for the cage e2e test
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y busybox-static
       - run: cargo test --workspace --all-targets
 
   deny:
