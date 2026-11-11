@@ -53,7 +53,9 @@ sur disque, et empêcher qu'une sortie contamine l'interprétation côté appela
     **read-only** (bind + remount,ro via l'applet `mount` de busybox, possible
     car le processus est root dans son propre user namespace) pour empêcher
     l'agent d'écraser un outil via une écriture whitelist (tout le contenu du
-    chroot est sinon accessible en écriture sous le root).
+    chroot est sinon accessible en écriture sous le root). **Fail-closed** :
+    si un remount échoue, la console refuse de démarrer (exit 2) — une image de
+    cage accessible en écriture n'est pas un déploiement acceptable.
   - **Commandes trusted en mode serveur** : avec un busybox stagé, `trusted`
     s'exécute via `<busybox> sh -c` (`PATH` cage, `HOME=/tmp`, `GOROOT` détecté
     si présent, limites `ulimit` identiques au mode user). **Sans busybox

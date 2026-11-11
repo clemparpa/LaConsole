@@ -104,20 +104,24 @@ pub fn cleanup_staged_bin() {
     }
 }
 
-/// Best-effort defense in depth: remount the staged cage image read-only
+/// Defense in depth, fail-closed: remount the staged cage image read-only
 /// (bind + remount,ro) via the staged busybox `mount` applet. The process is
 /// root inside its own user namespace, so it holds CAP_SYS_ADMIN over the
 /// unshared mount namespace and the remount cannot leak to the host. Without
 /// this, the agent could overwrite `/bin/busybox` or a staged tool through
-/// ordinary whitelist writes (everything under the chroot root is writable).
-/// Failures are reported on stderr but not fatal: the chroot + userns still
-/// confine every escape. No-op outside Linux or without a staged busybox.
-pub fn protect_cage_tools() {
+/// ordinary whitelist writes (everything under the chroot root is writable)
+/// and have that tampered binary run inside later `trusted` commands. Any
+/// failure is returned as an error and the caller must abort (exit 2): the
+/// chroot + userns still confine escapes, but a writable cage image is not an
+/// acceptable deployment. No-op outside Linux or without a staged busybox
+/// (in that case `trusted` stays denied, so there is nothing executable to
+/// protect).
+pub fn protect_cage_tools() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         let busybox = Path::new(CAGE_BUSYBOX);
         if !busybox.is_file() {
-            return;
+            return Ok(());
         }
         let mut targets = vec!["/bin".to_string()];
         for path in [CAGE_TOOLS_DIR, CAGE_LIBS_DIR] {
@@ -125,25 +129,40 @@ pub fn protect_cage_tools() {
                 targets.push(path.to_string());
             }
         }
-        for target in targets {
-            let bind = std::process::Command::new(busybox)
-                .arg("mount")
-                .arg("-o")
-                .arg("bind")
-                .arg(&target)
-                .arg(&target)
-                .status();
-            let remount = std::process::Command::new(busybox)
-                .arg("mount")
-                .arg("-o")
-                .arg("remount,ro")
-                .arg(&target)
-                .status();
-            if !matches!(bind, Ok(s) if s.success()) || !matches!(remount, Ok(s) if s.success()) {
-                eprintln!("warning: could not remount {target} read-only in the cage");
-            }
+        for target in &targets {
+            remount_read_only(busybox, target)?;
         }
+        Ok(())
     }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(())
+    }
+}
+
+/// Bind-mounts `target` onto itself then remounts it read-only via the staged
+/// busybox `mount` applet; any failure is an error.
+#[cfg(target_os = "linux")]
+fn remount_read_only(busybox: &Path, target: &str) -> Result<(), String> {
+    let bind = std::process::Command::new(busybox)
+        .arg("mount")
+        .arg("-o")
+        .arg("bind")
+        .arg(target)
+        .arg(target)
+        .status();
+    let remount = std::process::Command::new(busybox)
+        .arg("mount")
+        .arg("-o")
+        .arg("remount,ro")
+        .arg(target)
+        .status();
+    if !matches!(bind, Ok(s) if s.success()) || !matches!(remount, Ok(s) if s.success()) {
+        return Err(format!(
+            "could not remount {target} read-only in the cage (refusing to run with a writable cage image)"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -692,7 +711,36 @@ mod tests {
     #[test]
     fn protect_cage_tools_is_a_noop_without_busybox() {
         if !Path::new(CAGE_BUSYBOX).exists() {
-            protect_cage_tools();
+            assert!(protect_cage_tools().is_ok());
         }
+    }
+
+    /// A fake busybox whose `mount` applet always fails (exit 1) or always
+    /// succeeds (exit 0), to exercise the fail-closed path of the remount.
+    #[cfg(target_os = "linux")]
+    fn fake_mount_busybox(dir: &tempfile::TempDir, exit_code: i32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let fake = dir.path().join("busybox");
+        std::fs::write(&fake, format!("#!/bin/sh\nexit {exit_code}\n")).unwrap();
+        std::fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+        fake
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn remount_read_only_succeeds_when_mount_applet_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let busybox = fake_mount_busybox(&dir, 0);
+        assert!(remount_read_only(&busybox, "/bin").is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn remount_read_only_is_fatal_when_mount_applet_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let busybox = fake_mount_busybox(&dir, 1);
+        let err = remount_read_only(&busybox, "/bin").unwrap_err();
+        assert!(err.contains("/bin"), "got: {err}");
+        assert!(err.contains("read-only"), "got: {err}");
     }
 }

@@ -83,7 +83,10 @@ fn main() {
     }
     let sandbox_shell = if cli.inside_sandbox {
         la_console::sandbox::cleanup_staged_bin();
-        la_console::sandbox::protect_cage_tools();
+        if let Err(err) = la_console::sandbox::protect_cage_tools() {
+            eprintln!("error: {err}");
+            std::process::exit(2);
+        }
         la_console::sandbox::cage_shell().map(String::from)
     } else {
         None
