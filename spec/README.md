@@ -34,6 +34,7 @@ copié tel quel dans le dépôt public du projet.
 | [protocol.md](protocol.md) | Interface externe : CLI, protocole ligne par ligne stdin/stdout, format JSON des réponses |
 | [architecture.md](architecture.md) | Pipeline de validation à 3 niveaux, interface d'écriture unique (Sink) |
 | [commands.md](commands.md) | Whitelist des commandes, commandes trusted, règles de parsing |
+| [plugins.md](plugins.md) | Mécanisme de plugins (brouillon v2) : manifeste épinglé, syntaxe standard, responsabilités harnais/console |
 | [security.md](security.md) | Modèle de menaces, confinement (`resolve()`), fichiers sensibles, masquage des secrets, vecteurs d'évasion |
 | [testing.md](testing.md) | Stratégie de test et outillage : fmt, clippy, tests unitaires, proptest, e2e, fuzzing, mutation testing, CI |
 | [structure.md](structure.md) | Structure du dépôt et dépendances figées |
