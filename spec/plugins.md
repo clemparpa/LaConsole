@@ -1,11 +1,11 @@
 # Plugins (brouillon — discussion v2)
 
 > Statut : **brouillon soumis à revue**. Aucune implémentation derrière pour
-> l'instant. Objectif : un mécanisme de « plugins » (ex. lancer des conteneurs
-> OCI) où le **harnais de l'agent déclare la politique** (fichier revu par un
-> humain, épinglé par sha256, comme `trusted.txt`) mais où **la console conserve
-> la validation, le confinement, les limites et le kill de l'exécution** — jamais
-> délégués au harnais.
+> l'instant. Objectif : un mécanisme de « plugins » (ex. piloter un navigateur,
+> lancer des conteneurs OCI) où le **harnais de l'agent déclare la politique**
+> (fichier revu par un humain, épinglé par sha256, comme `trusted.txt`) mais où
+> **la console conserve la validation, le confinement, les limites et le kill
+> de l'exécution** — jamais délégués au harnais.
 
 ## Principe absolu
 
@@ -30,7 +30,7 @@ aucun nouveau format :
 ```
 
 - Le premier mot de `cmd` est le **nom standard de l'outil** déclaré dans le
-  manifeste (ex. `docker`, `podman`, `git`) — la console le mappe vers le binaire
+  manifeste (ex. `browser`, `docker`) — la console le mappe vers le binaire
   épinglé. L'agent retrouve une syntaxe familière (sous-commandes, flags usuels).
 - Réponse : **exactement le contrat v1**, une ligne JSON
   (`{ok, code, kind?, stdout, stderr, truncated}`), inchangé.
@@ -51,16 +51,16 @@ et épinglé via `--plugins-sha256 <hex>` (miroir de `--trusted-file` /
   "plugins": [
     {
       "tool": "docker",
-      "bin": "/opt/la-console-plugins/docker-crun",
+      "bin": "/opt/la-console-plugins/crun-run",
       "network": "none",
+      "images": ["alpine@sha256:abc123…"],
       "limits": { "mem": "512m", "cpus": 1, "pids": 100 },
       "subcommands": {
         "run": {
-          "flags": ["--rm", "--name", "--network", "-e", "--memory", "--cpus"],
-          "path_flags": ["-v", "--mount"]
+          "flags": ["--rm", "--name", "-e", "-v", "--read-only"],
+          "path_flags": ["-v"]
         },
-        "ps": { "flags": ["-a", "--format"] },
-        "images": { "flags": ["-a"] }
+        "ps": { "flags": ["-a"] }
       }
     }
   ]
@@ -73,8 +73,10 @@ Schéma d'une entrée :
 |---|---|---|
 | `tool` | ✅ | matche `^[A-Za-z_][A-Za-z0-9_-]*$`, nom usuel de l'outil ; doublon = refus total |
 | `bin` | ✅ | chemin absolu du binaire épinglé, dans un répertoire autorisé ; c'est lui qui est exécuté |
-| `network` | ✅ | `"none"` (défaut recommandé) ou `"localhost"` (allowlist `localhost`/`127.0.0.1`/`::1`, comme `http` v1) |
-| `limits` | ❌ | objet `{ "mem": "512m", "cpus": 1, "pids": 100 }`, injecté dans la config générée pour le runtime |
+| `network` | ✅ | `"none"` ou `"localhost"` (allowlist `localhost`/`127.0.0.1`/`::1`, comme `http` v1). En mode **user**, seul `"none"` est accepté en v1 |
+| `images` | ❌ | allowlist d'images épinglées par digest (`name@sha256:…`) ; tout le reste = `denied` |
+| `url_hosts` | ❌ | allowlist de hosts pour un arg URL (ex. plugin navigateur) ; validation par la console avant spawn |
+| `limits` | ❌ | objet `{ "mem": "512m", "cpus": 1, "pids": 100 }`, injecté dans le spec/config généré(e) |
 | `no_path_check` | ❌ | `true` = l'humain autorise ce plugin à toucher hors du root (défaut `false`) |
 | `subcommands` | ✅ | map nom de sous-commande → schéma d'args (voir ci-dessous) |
 
@@ -84,6 +86,7 @@ Schéma d'une sous-commande :
 |---|---|---|
 | `flags` | ✅ | allowlist des flags acceptés (`--flag`, `--flag=valeur`, `-f`) |
 | `path_flags` | ❌ | flags dont la **valeur est un chemin** (ex. `-v src:dst`) → chaque chemin passe par `resolve()` + sensibles |
+| `url_arg` | ❌ | position de l'arg URL, validé contre `url_hosts` |
 
 Règles de parsing (fail-closed) :
 
@@ -100,46 +103,100 @@ Pourquoi JSON et pas YAML : pas de nouvelle dépendance, pas de footguns de
 parser (ancres, coercition de types), et les schémas **par sous-commande**
 sont naturellement imbriqués.
 
+## Abstraction `Sandbox` : un trait, des backends par OS
+
+Tout sous-processus (plugin ou `trusted`) est spawné via une abstraction unique
+— le reste du code ne sait pas quel OS tourne derrière :
+
+```rust
+trait Sandbox {
+    /// Spawn un processus confiné selon la politique (FS = root, réseau, limites).
+    fn spawn(&self, cmd: &mut Command, policy: &Policy) -> io::Result<Child>;
+}
+
+enum SandboxBackend {
+    Cage,      // mode serveur : userns + chroot appliqués au démarrage (hérité par tout spawn)
+    Seatbelt,  // macOS user : sandbox-exec -p '<profil généré>'
+    Landlock,  // Linux user : règles Landlock (no_new_privs + landlock_create_ruleset)
+    Userns,    // Linux user : re-exec userns+chroot par invocation (si sysctl l'autorise)
+}
+```
+
+**Fail-closed absolu** : aucun backend applicable → l'invocation = `denied`
+(code 2), jamais de mode dégradé. **Aucun privilège requis nulle part** (jamais
+de root) :
+
+| Backend | Prérequis | Privilège |
+|---|---|---|
+| `Cage` (serveur) | Linux, `kernel.unprivileged_userns_clone=1` (sysctl ; sinon mode serveur refusé, exit 2) | aucun (userns non privilégié) |
+| `Seatbelt` (macOS user) | `sandbox-exec` présent (livré avec macOS) | aucun — applique le profil à son propre fils |
+| `Landlock` (Linux user) | noyau ≥ 5.13 (réseau : ABI v4, noyau ≥ 6.7) ; syscalls non bloqués (ex. pas sous seccomp restrictif) | aucun — auto-restriction via `no_new_privs` |
+| `Userns` (Linux user) | comme `Cage`, par invocation | aucun si sysctl OK, sinon indisponible → `denied` |
+
+Détails des backends :
+
+- **Seatbelt** : profil généré par la console à partir de `--root` et de la
+  politique réseau, deny-by-default :
+  `(version 1)(deny default)(allow file-read* (subpath "<root>"))(allow file-write* (subpath "<root>"))(deny network*)`.
+  Les règles réseau de Seatbelt sont all-or-nothing (pas de « localhost
+  only ») → en mode user, `network` des plugins = `"none"` uniquement.
+- **Landlock** : règles FS = accès restreint au root (lecture/écriture), réseau
+  selon `network` (`"none"` = aucun droit `BIND_TCP`/`CONNECT_TCP` quand l'ABI
+  le permet). Les restrictions sont **héritées par fork/exec** : même un
+  processus détaché (`setsid`) reste confiné.
+- **Cage** : appliquée une fois au démarrage (re-exec de toute la console dans
+  `unshare --user --map-root-user --mount --root <root>`) ; les spawns suivants
+  héritent du confinement, le binaire du plugin étant stagé dans la cage en
+  read-only. En mode user, le binaire vit sur le host au chemin déclaré et
+  c'est le wrapper d'exec (Seatbelt/Landlock) qui confine le processus.
+
 ## Règles d'exécution (toutes appliquées par la console)
 
 - **argv reconstruit, jamais de chaîne shell** : `[binaire épinglé] + [argv
   prefixe déclaré] + [args validés]` ; les args de l'agent sont passés tels
   quels en position finale, jamais réinterprétés par un shell ;
 - **args validés contre le schéma de la sous-commande invoquée** : sous-commande
-  et flags doivent être dans l'allowlist ; `path_flags` → `resolve()` +
-  sensibles (sauf `no_path_check: true` déclaré par l'humain) ; valeurs des
-  autres flags validées (type/pattern) ; le reste = `fail` avec la syntaxe
-  acceptée ;
+  et flags dans l'allowlist ; `path_flags` → `resolve()` + sensibles (sauf
+  `no_path_check: true`) ; `url_arg` → host dans `url_hosts` ; images → digest
+  dans `images` ; le reste = `fail` avec la syntaxe acceptée ;
 - environnement réduit (`PATH`, `LANG`, `HOME` hors du root), `cwd = root`,
   **stdin = null** (le stdin du processus appartient au protocole JSON) ;
+- **spawn via `Sandbox`** (section précédente) avec la politique du manifeste ;
 - **sortie** : `stdout`/`stderr` du plugin passent par `CallerSink` (masquage
   des secrets, troncature à `max_output_bytes`) avant la réponse JSON ;
 - **limites** : timeout par invocation (`run_with_timeout`, défaut 30 s) avec
-  `kill()` du **groupe de processus entier** (un runtime de conteneurs forke —
-  tuer le seul leader laisserait tourner le conteneur) ; `ulimit` sur le
-  sous-processus (`-v` mémoire, `-t` CPU + grâce, `-f` = quota disque) ; limites
-  `limits` du manifeste injectées dans la config du runtime (ex. `--memory`,
-  `--pids-limit`) — deux couches, defense in depth ;
+  `kill()` du **groupe de processus entier** + cleanup du cgroup quand le
+  plugin est un runtime de conteneurs (tuer le seul leader laisserait tourner
+  le conteneur) ; `ulimit` sur le sous-processus (`-v` mémoire, `-t` CPU +
+  grâce, `-f` = quota disque) ; `limits` du manifeste injectées dans le spec
+  OCI/config généré(e) (`mem`, `cpus`, `pids`, `no-new-privileges`, seccomp par
+  défaut, rootfs read-only si demandé) — deux couches, defense in depth ;
 - **quota disque** : `DiskQuota` partagé entre tous les `FileSink` de
   l'invocation, comme pour les commandes whitelist ;
-- **réseau** : `network: "none"` par défaut ; aucun pull d'image — les images
-  doivent être pré-stagées dans la cage ;
+- **réseau** : `"none"` par défaut ; aucun pull d'image — les images doivent
+  être pré-stagées et épinglées par digest ;
 - **pipes** : ❌ v1, un plugin ne participe à aucun pipe (comme `trusted`) ;
   `;`/`&&` autorisé uniquement si les deux côtés sont whitelist ou plugin ;
   **redirections de sortie** `>`/`>>` vers un chemin du root, via `FileSink`
   validé (resolve + sensibles + bornes) avant ouverture.
 
-## Mode serveur (cage)
+## Deux couches de défense (rappel)
 
-- Les binaires de plugins (et leurs dépendances ELF, via `ldd`) sont stagés dans
-  la cage en read-only (réutilise la machinerie de staging de la v2 étape 2 :
-  `--sandbox-tools-dir` / nouveau `--sandbox-plugins-dir`), puis remountés
-  read-only au démarrage — si le remount échoue, la console refuse de démarrer
-  (fail-closed, exit 2) ;
-- sans binaire stagé pour un plugin déclaré, ce plugin = `denied` (fail-closed),
-  comme `trusted` sans busybox ;
-- dans la cage, `--root /` : tout chemin de l'agent est résolu sous la racine de
-  la cage.
+| Couche | Protège contre |
+|---|---|
+| Validation d'entrée (`resolve()`, schéma, allowlists, sha256) | **l'agent** (entrée non fiable) |
+| Bac à sable OS (`Sandbox`) | **le processus plugin lui-même** compromis/malveillant (ex. 0-day navigateur) : lecture/écriture hors du root impossible, même pour un fils détaché |
+
+## Exemples d'usage
+
+- **`browser open https://example.com --timeout 10`** (navigateur headless épinglé,
+  `url_hosts: ["example.com"]`) : le DOM revient en `stdout` masqué/tronqué.
+  Menace couverte : page malveillante + 0-day Chromium → le processus compromis
+  ne peut lire que le root, pas `~/.ssh` ni les credentials du host.
+- **`docker run --rm -v /data:/work alpine@sha256:abc… cat /work/f.txt`** :
+  image épinglée par digest, `-v` `resolve()`-é sous le root, spec OCI généré
+  par la console (`network: none`, limites, caps droppées), runtime spawné via
+  `Sandbox`, kill du groupe + cgroup au timeout.
 
 ## Répartition des responsabilités
 
@@ -147,7 +204,7 @@ sont naturellement imbriqués.
 |---|---|---|
 | Déclare la politique (manifeste, sha256, revue humaine) | ✅ | lit + re-vérifie |
 | Valide les args (resolve, sensibles, schéma) | ❌ | ✅ |
-| Confinement (root / cage userns+chroot) | ❌ | ✅ |
+| Confinement (`Sandbox`: cage/Seatbelt/Landlock, fail-closed) | ❌ | ✅ |
 | Limites (timeout, mémoire, disque, sortie) et kill | ❌ | ✅ |
 | Exécution du binaire | ❌ | ✅ (sous-processus, jamais in-process) |
 | Journalisation (op, plugin, sha256, code/kind dans la réponse) | ❌ | ✅ |
@@ -158,8 +215,9 @@ manifeste — d'où la re-vérification sha256 côté console avant chaque exéc
 ## Menaces couvertes (rappel)
 
 - plugin épinglé par erreur/malveillance → revue humaine + sha256 + re-vérif ;
-- fork bomb / fuite de processus → limite `pids` + kill du groupe de processus ;
-- évasion réseau → `network: "none"` par défaut, allowlist localhost sinon ;
+- processus plugin compromis (0-day) → `Sandbox` : FS = root seul, réseau selon
+  politique, limites ; fork bomb/fuite → limite `pids` + kill du groupe ;
+- évasion réseau → `network: "none"` par défaut ; images pré-stagées uniquement ;
 - écriture disque hors bornes → confinement root + `DiskQuota` + `ulimit -f` ;
 - contournement du manifeste par l'agent → manifeste hors du root, sha256
   vérifié à chaque exécution, args jamais réinterprétés.
@@ -167,8 +225,10 @@ manifeste — d'où la re-vérification sha256 côté console avant chaque exéc
 ## Phases proposées
 
 1. Ce document, revu et validé (cette PR) ;
-2. Implémentation : `plugins.rs` (parse JSON strict, sha256, schéma d'args par
-   sous-commande, exécution) en réutilisant `TrustedRegistry` /
+2. Module `sandbox.rs` : trait `Sandbox` + backends (cage héritée du mode
+   serveur, `seatbelt.rs`, `landlock.rs`), fail-closed ; tests par plateforme ;
+3. `plugins.rs` : parse JSON strict, sha256, schéma d'args par sous-commande,
+   spawn via `Sandbox`, exécution — en réutilisant `TrustedRegistry` /
    `run_with_timeout` / `DiskQuota` ; `help` liste aussi les plugins déclarés ;
-3. `trusted` reste en place (cas particulier « plugin shell ») ; migration
+4. `trusted` reste en place (cas particulier « plugin shell ») ; migration
    éventuelle plus tard.
