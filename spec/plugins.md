@@ -103,28 +103,43 @@ Pourquoi JSON et pas YAML : pas de nouvelle dépendance, pas de footguns de
 parser (ancres, coercition de types), et les schémas **par sous-commande**
 sont naturellement imbriqués.
 
-## Abstraction `Sandbox` : un trait, des backends par OS
+## Abstraction `Sandbox` : un seul point de confinement, choisi au démarrage
 
-Tout sous-processus (plugin ou `trusted`) est spawné via une abstraction unique
-— le reste du code ne sait pas quel OS tourne derrière :
+Plus de distinction `user`/`server` exposée : au démarrage, la console **se
+confine elle-même** avec le backend le plus fort disponible sur l'OS, puis
+spawne plugins et `trusted` à travers la même abstraction. Le reste du code ne
+sait pas quel backend tourne ; la distinction user/server devient un détail
+interne (quel backend a été retenu).
+
+Ordre de sélection (auto) :
+
+1. **Linux** : cage userns+chroot (`unshare --user --map-root-user --mount
+   --root <root>`, re-exec avec marqueur anti-boucle) si
+   `kernel.unprivileged_userns_clone=1` — backend le plus fort, celui des
+   déploiements serveur (hors du root, les chemins n'existent pas pour le
+   processus) ;
+2. **Linux** : Landlock appliqué in-process au début de `main()` (hérité par
+   les threads de commandes et les processus fils) ;
+3. **macOS** : re-exec via `sandbox-exec -p '<profil généré>'` ;
+4. aucun backend → **refus de démarrer (exit 2), fail-closed**, sauf flag
+   explicite `--allow-no-sandbox` (opt-out documenté, debug local uniquement).
 
 ```rust
 trait Sandbox {
-    /// Spawn un processus confiné selon la politique (FS = root, réseau, limites).
+    /// Confine le processus console lui-même (appelé au démarrage).
+    fn confine_self(root: &Path, policy: &Policy) -> io::Result<SandboxBackend>;
+    /// Spawn un sous-processus (plugin/trusted) — hérite du confinement courant.
     fn spawn(&self, cmd: &mut Command, policy: &Policy) -> io::Result<Child>;
-}
-
-enum SandboxBackend {
-    Cage,      // mode serveur : userns + chroot appliqués au démarrage (hérité par tout spawn)
-    Seatbelt,  // macOS user : sandbox-exec -p '<profil généré>'
-    Landlock,  // Linux user : règles Landlock (no_new_privs + landlock_create_ruleset)
-    Userns,    // Linux user : re-exec userns+chroot par invocation (si sysctl l'autorise)
 }
 ```
 
-**Fail-closed absolu** : aucun backend applicable → l'invocation = `denied`
-(code 2), jamais de mode dégradé. **Aucun privilège requis nulle part** (jamais
-de root) :
+La cage garde tout son sens même avec Landlock : confinement **structurel**
+(mount namespace + chroot + userns) vs simple contrôle d'accès (Landlock,
+Seatbelt) — deux forces complémentaires, la cage restant le backstop ultime
+contre un bug de logique dans `resolve()`.
+
+**Fail-closed absolu** : aucun backend applicable → exit 2 au démarrage, sauf
+`--allow-no-sandbox`. **Aucun privilège requis nulle part** (jamais de root) :
 
 | Backend | Prérequis | Privilège |
 |---|---|---|
@@ -147,8 +162,10 @@ Détails des backends :
 - **Cage** : appliquée une fois au démarrage (re-exec de toute la console dans
   `unshare --user --map-root-user --mount --root <root>`) ; les spawns suivants
   héritent du confinement, le binaire du plugin étant stagé dans la cage en
-  read-only. En mode user, le binaire vit sur le host au chemin déclaré et
-  c'est le wrapper d'exec (Seatbelt/Landlock) qui confine le processus.
+  read-only (les flags `--sandbox-busybox` / `--sandbox-tools-dir` ne
+  s'appliquent qu'à ce backend). Avec les autres backends, le binaire du
+  plugin vit sur le host au chemin déclaré et c'est le wrapper qui confine le
+  processus à chaque spawn.
 
 ## Règles d'exécution (toutes appliquées par la console)
 
@@ -225,8 +242,9 @@ manifeste — d'où la re-vérification sha256 côté console avant chaque exéc
 ## Phases proposées
 
 1. Ce document, revu et validé (cette PR) ;
-2. Module `sandbox.rs` : trait `Sandbox` + backends (cage héritée du mode
-   serveur, `seatbelt.rs`, `landlock.rs`), fail-closed ; tests par plateforme ;
+2. Module `sandbox.rs` : trait `Sandbox` unifié (`confine_self` au démarrage +
+   `spawn`), sélection auto du backend (cage / Landlock / Seatbelt),
+   fail-closed par défaut + `--allow-no-sandbox` ; tests par plateforme ;
 3. `plugins.rs` : parse JSON strict, sha256, schéma d'args par sous-commande,
    spawn via `Sandbox`, exécution — en réutilisant `TrustedRegistry` /
    `run_with_timeout` / `DiskQuota` ; `help` liste aussi les plugins déclarés ;
