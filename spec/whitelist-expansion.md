@@ -37,10 +37,15 @@
 
 ## Propositions (par paquets)
 
-### A. Flags `grep` (petit, sûr)
+### A. Flags `grep` — décision actée
 
-- `-v` (inverser la sélection : supprimer le bruit), `-i` (insensible à la casse),
-  `-c` (compter les matchs au lieu de les imprimer). Numéros de ligne déjà actifs.
+Décision actée, documentée dans `spec/commands.md` (section « Commande `grep` — flags ») :
+acceptés `-F`, `-e`, `-E` (no-op : le dialecte est ERE), `-i`, `-v`, `-w`, `-x`, `-c`, `-o`,
+`-l`, `-L`, `-m NUM` (borné), `-q`, `-B/-A/-C NUM` (borné) + `--group-separator`, `-n`
+(no-op : toujours actif), `-a/--all` (sens ripgrep, déjà en v1) ; refusés `-P` (PCRE,
+ReDoS), `-G` (BRE), `-z`, `-b`, `-h`, `--label`, `-R`, `-d`, `-D`, `--binary-files` et
+les cosmétiques ; à réfléchir en v2 : `-f`, `--include`/`--exclude`/`--exclude-from`/
+`--exclude-dir`, `-a` binaire (sens GNU, conflit avec `-a` = `--all`).
 - Combinaisons de flags courts autorisées (`-vi`), parsing strict : toute option
   inconnue reste un `fail`. `-c` reste borné par `max_grep_matches`.
 
@@ -118,7 +123,7 @@ composables en tête de pipe (PR #30).
 ## Phases proposées
 
 1. Ce document, revu et validé (cette PR) ;
-2. Paquet A — flags `grep` (`-v`, `-i`, `-c`) ;
+2. Paquet A — flags `grep` (décision actée dans `spec/commands.md` : `-F -e -E -i -v -w -x -n -c -o -l -L -m -q -B/-A/-C` acceptés) ;
 3. Paquet B — filtres de flux (`head`/`tail`/`wc`/`sort`/`uniq`/`cut`/`tr`) ;
 4. Paquet C — `sed` sur flux (règle de position au parse) ;
 5. Paquets D (`json`) et E (`tee`) uniquement si un besoin mesuré les justifie.

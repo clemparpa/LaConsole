@@ -18,7 +18,7 @@ sensibles**, même après expansion de glob ou substitution de variable.
 | `cat <path>` | ✅ | `resolve()` + taille max |
 | `ls [path]` | ✅ | `resolve()`, entrées bornées ; respecte `.gitignore` par défaut, `--all` pour tout lister |
 | `echo <text> [> path | >> path]` | ✅ | `resolve()`, taille max, `>` écrase, `>>` append |
-| `grep <pattern> <path...>` | ✅ | via crate `grep`, fichiers bornés ; respecte `.gitignore` par défaut, `--all` pour tout chercher — chaque fichier matché passe quand même par `resolve()` + bornes |
+| `grep [flags] <pattern> [path...]` | ✅ | via crate `grep`, fichiers bornés ; respecte `.gitignore` par défaut, `--all` pour tout chercher — chaque fichier matché passe quand même par `resolve()` + bornes ; flags : voir « Commande `grep` — flags » ci-dessous |
 | `sub <pattern> <repl> <path>` (sed-like) | ✅ | substitution via `regex` uniquement, fichiers bornés |
 | `sed [-i] s/<pat>/<repl>/[g] <path...>` | ✅ | alias sed **restreint** : voir ci-dessous |
 | `http <METHOD> <url> [--data <body>] [--header k:v]` | ✅ | implémentation **Rust maison** (pas de binaire curl), crate `reqwest` + rustls côté console. Allowlist d'hôtes : v1 = `localhost`/`127.0.0.1`/`::1` uniquement, extensible via liste déclarée par l'humain. Blocage des IP de métadonnées cloud (169.254.169.254) et plages privées non déclarées. Timeout court, taille de réponse bornée, redirects revalidés contre l'allowlist. `--data` borné en taille |
@@ -54,6 +54,46 @@ sensibles**, même après expansion de glob ou substitution de variable.
   `&` (match entier, traduit en `$0`) ; `\&` = `&` littéral, `\\` = `\` littéral.
 - Cibles : globs autorisés, chaque fichier passe par `resolve()` + sensibles +
   bornes de lecture ; en mode `-i` la réécriture passe par `FileSink`.
+
+## Commande `grep` — flags (paquet A de whitelist-expansion : décision actée)
+
+Syntaxe : `grep [flags] <pattern> [path...]` — sans `path`, lit l'entrée (pipe ou
+redirection `<`). Le **dialecte est ERE** (expressions régulières étendues, moteur
+`regex` Rust à temps linéaire) : `-E`/`--extended-regexp` est accepté comme no-op
+documenté. Les flags courts se combinent (`-vi`) ; parsing strict : toute option
+inconnue = `fail`. `-n`/`--line-number` est **toujours actif** et accepté aussi
+comme no-op explicite. `-a`/`--all` garde son sens ripgrep (chercher aussi dans les
+fichiers cachés et ceux ignorés par `.gitignore`) ; le `-a` de GNU grep
+(`--text`, binaires lus comme du texte) n'est pas supporté — voir « à réfléchir ».
+
+| Flag | Effet | Décision |
+|---|---|---|
+| `-F`, `--fixed-strings` | pattern littéral (aucune regex) | ✅ accepté |
+| `-e PAT`, `--regexp=PAT` | déclare explicitement le pattern | ✅ accepté |
+| `-E`, `--extended-regexp` | dialecte ERE = défaut | ✅ no-op documenté |
+| `-i`, `--ignore-case` | insensible à la casse | ✅ accepté |
+| `-v`, `--invert-match` | sélectionne les lignes qui ne matchent pas | ✅ accepté |
+| `-w`, `--word-regexp` | mot entier | ✅ accepté |
+| `-x`, `--line-regexp` | la ligne entière doit matcher | ✅ accepté |
+| `-n`, `--line-number` | numéros de ligne | ✅ toujours actif ; no-op si tapé explicitement |
+| `-c`, `--count` | compte les matchs par fichier | ✅ accepté (borné par `max_grep_matches`) |
+| `-o`, `--only-matching` | n'affiche que la partie matchée | ✅ accepté |
+| `-l`, `--files-with-matches` | noms des fichiers avec au moins un match | ✅ accepté |
+| `-L`, `--files-without-match` | noms des fichiers sans match | ✅ accepté |
+| `-m NUM`, `--max-count=NUM` | stop après NUM matchs par fichier | ✅ accepté, NUM borné |
+| `-q`, `--quiet` | aucun stdout ; code 0 si match, 1 sinon | ✅ accepté |
+| `-B N`, `-A N`, `-C N`, `-N` | N lignes de contexte avant/après/autour | ✅ accepté, N borné (ex. ≤ 100) |
+| `--group-separator=SEP` | séparateur entre groupes de contexte | ✅ accepté avec `-B/-A/-C` (défaut `--`) |
+| `-a`, `--all` | cherche partout (cachés + `.gitignore` ignoré) | ✅ déjà en v1 (sens ripgrep) |
+| `-f FILE`, `--file=FILE` | patterns lus dans un fichier | 🤔 v2 : à étudier (`resolve()` + bornes) |
+| `--include=GLOB`, `--exclude=GLOB`, `--exclude-dir=GLOB` | filtre sur noms de fichiers/dossiers | 🤔 v2 : à réfléchir (`.gitignore` + cachés restent la sécurité de base, même avec `--all`) |
+| `--exclude-from=FILE` | exclusions depuis un fichier | 🤔 v2 (idem `-f`) |
+| `-a`, `--text` (sens GNU) | binaires lus comme du texte (ex. images) | 🤔 v2 : à réfléchir ; conflit de sens avec notre `-a` = `--all` |
+| `-G`, `-P`, `-z` | BRE / PCRE (ReDoS) / lignes séparées par `\0` | ❌ refusé `fail` |
+| `-b`, `-h`, `--label` | offset octets / sans nom de fichier / renomme stdin | ❌ refusé (sortie toujours `fichier:ligne:...`) |
+| `-R`, `-d`, `-D` | suit les symlinks / lit les dossiers / lit les devices | ❌ refusé fail-closed |
+| `--binary-files=TYPE`, `-I` | politique binaire | ❌ fixée : arrêt sur `\0` (= `-I` implicite, toujours actif) |
+| `--color`, `-U`, `-Z`, `-T`, `-s`, `--line-buffered`, `-V`, `--help` | cosmétiques / meta | ❌ refusé (pas de TTY, v1 Unix-only, `help grep` existe) |
 
 ## Commandes trusted
 
