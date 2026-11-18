@@ -1,5 +1,6 @@
 use la_console::parse::{
-    all_commands, has_glob, parse_input, pipe_has_misplaced_trusted, pipe_has_trusted, ParseError,
+    all_commands, has_glob, parse_input, pipe_has_misplaced_trusted, pipe_has_stream_forbidden,
+    pipe_has_trusted, ParseError,
 };
 use proptest::prelude::*;
 use std::collections::HashMap;
@@ -25,6 +26,54 @@ fn trusted_is_allowed_only_as_pipe_head() {
     assert!(parse_input("trusted x | cat a", &no_vars()).is_ok());
 }
 
+#[test]
+fn sed_without_path_is_only_allowed_in_stream_position() {
+    for cmd in [
+        "sed",
+        r#"sed "s/a/b/""#,
+        "sed -i",
+        r#"sed -i "s/a/b/""#,
+        r#"sed "s/a/b/" | grep x"#,
+        r#"sed "s/a/b/" < f.txt"#,
+    ] {
+        assert!(
+            matches!(
+                parse_input(cmd, &no_vars()),
+                Err(ParseError::SedStreamNeedsPipe)
+            ),
+            "{cmd}"
+        );
+    }
+    assert!(parse_input(r#"cat x | sed "s/a/b/""#, &no_vars()).is_ok());
+    assert!(parse_input(r#"cat x | sed "s/a/b/" | grep b"#, &no_vars()).is_ok());
+    assert!(parse_input(r#"cat x | sed "s/a/b/" > out.txt"#, &no_vars()).is_ok());
+    assert!(parse_input(r#"sed "s/a/b/" f.txt"#, &no_vars()).is_ok());
+    assert!(parse_input(r#"sed -i "s/a/b/" f.txt"#, &no_vars()).is_ok());
+    assert!(parse_input(r#"sed "s/a/b/" f.txt | grep x"#, &no_vars()).is_ok());
+}
+
+#[test]
+fn sed_dash_i_and_sub_are_denied_in_stream_position() {
+    assert!(matches!(
+        parse_input(r#"cat x | sed -i "s/a/b/" f.txt"#, &no_vars()),
+        Err(ParseError::SedInPlaceInPipe)
+    ));
+    assert!(matches!(
+        parse_input(r#"cat x | sed -i "s/a/b/""#, &no_vars()),
+        Err(ParseError::SedInPlaceInPipe)
+    ));
+    assert!(matches!(
+        parse_input("cat x | sub a b f.txt", &no_vars()),
+        Err(ParseError::SubInPipe)
+    ));
+    assert!(matches!(
+        parse_input("cat x | sub a b", &no_vars()),
+        Err(ParseError::SubInPipe)
+    ));
+    assert!(parse_input("sub a b f.txt | grep x", &no_vars()).is_ok());
+    assert!(parse_input(r#"sed -i "s/a/b/" f.txt | grep x"#, &no_vars()).is_ok());
+}
+
 mod proptests {
     use super::*;
 
@@ -35,6 +84,16 @@ mod proptests {
                 prop_assert!(
                     !pipe_has_misplaced_trusted(&node),
                     "trusted after pipe head for {input:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn never_stream_forbidden_command(input in any::<String>()) {
+            if let Ok(node) = parse_input(&input, &no_vars()) {
+                prop_assert!(
+                    !pipe_has_stream_forbidden(&node),
+                    "sub/sed -i in stream position or path-less sed outside stream for {input:?}"
                 );
             }
         }

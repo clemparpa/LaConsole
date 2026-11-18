@@ -23,6 +23,12 @@ pub enum ParseError {
     TrustedInPipe,
     #[error("redirection is only allowed on the last command of a pipe")]
     RedirectInPipe,
+    #[error("'sed' without a file path is only allowed in stream position (after '|' in a pipe); usage: sed [-i] s/<pat>/<repl>/[g] <path...>")]
+    SedStreamNeedsPipe,
+    #[error("'sed -i' is not allowed in stream position (after '|'): in-place rewrite stays a standalone command with file paths")]
+    SedInPlaceInPipe,
+    #[error("'sub' is file-only (in-place rewrite) and is denied in stream position (after '|'), e.g. 'cat x | sub a b'")]
+    SubInPipe,
     #[error("variable assignment is not allowed")]
     Assignment,
     #[error("special variable '{0}' is not allowed")]
@@ -77,6 +83,51 @@ pub enum Redirect {
 
 pub fn is_trusted(cmd: &SimpleCommand) -> bool {
     cmd.argv.first().is_some_and(|a| a.text == "trusted")
+}
+
+fn cmd_name(cmd: &SimpleCommand) -> Option<&str> {
+    cmd.argv.first().map(|a| a.text.as_str())
+}
+
+/// Shape of a `sed` argv relevant to the stream-position rule:
+/// `(in_place, has_path_operands)`. Mirrors the leading-flag skipping of
+/// `commands::sed::run`: only leading `-i` flags are consumed, the next word
+/// is the script, the rest are path operands.
+fn sed_args_shape(argv: &[Arg]) -> (bool, bool) {
+    let mut in_place = false;
+    let mut i = 1usize;
+    while i < argv.len() && argv[i].text.starts_with('-') {
+        if argv[i].text == "-i" {
+            in_place = true;
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    (in_place, argv.len() > i + 1)
+}
+
+/// True when a parsed node violates the stream-position rules (paquet C of
+/// `spec/whitelist-expansion.md`): `sub` or `sed -i` after the head of a pipe,
+/// or a path-less `sed` outside a stream position. The parser rejects all of
+/// these; this predicate lets proptest/fuzz assert the invariant on any input
+/// that parsed successfully.
+pub fn pipe_has_stream_forbidden(node: &Node) -> bool {
+    match node {
+        Node::Seq(nodes) => nodes.iter().any(pipe_has_stream_forbidden),
+        Node::Pipe(cmds) => cmds.iter().enumerate().any(|(idx, cmd)| {
+            let stream = idx > 0;
+            match cmd_name(cmd) {
+                Some("sub") if stream => true,
+                Some("sed") => {
+                    let (in_place, has_paths) = sed_args_shape(&cmd.argv);
+                    (stream && in_place) || (!stream && !has_paths)
+                }
+                _ => false,
+            }
+        }),
+        Node::Simple(cmd) => cmd_name(cmd) == Some("sed") && !sed_args_shape(&cmd.argv).1,
+    }
 }
 
 pub fn all_commands(node: &Node) -> Vec<&SimpleCommand> {
@@ -382,6 +433,21 @@ impl TokenParser<'_> {
             }
             if idx + 1 < cmds.len() && !cmd.redirects.is_empty() {
                 return Err(ParseError::RedirectInPipe);
+            }
+            let stream_pos = cmds.len() > 1 && idx > 0;
+            match cmd_name(cmd) {
+                Some("sub") if stream_pos => return Err(ParseError::SubInPipe),
+                Some("sed") => {
+                    let (in_place, has_paths) = sed_args_shape(&cmd.argv);
+                    if stream_pos {
+                        if in_place {
+                            return Err(ParseError::SedInPlaceInPipe);
+                        }
+                    } else if !has_paths {
+                        return Err(ParseError::SedStreamNeedsPipe);
+                    }
+                }
+                _ => {}
             }
         }
         if cmds.len() == 1 {

@@ -360,14 +360,15 @@ pub static COMMANDS: &[CommandSpec] = &[
         syntaxes: &[
             "sed s/<pat>/<repl>/[g] <path...>",
             "sed -i s/<pat>/<repl>/[g] <path...>",
+            "sed s/<pat>/<repl>/[g] (no path: pipe stream only, after '|') [> <path>]",
         ],
-        summary: "restricted sed alias (s///[g] only): prints to stdout, -i rewrites in place",
+        summary: "restricted sed (s///[g] only, ERE): prints transformed content to stdout, -i rewrites files in place (standalone only); without a path, transforms the pipe/`<` input when after '|'",
         run: sed::run,
     },
     CommandSpec {
         name: "sub",
         syntaxes: &["sub <pattern> <replacement> <path...>"],
-        summary: "regex substitution, rewrites files in place",
+        summary: "regex substitution, rewrites files in place; file-only: denied in a pipe (after '|')",
         run: sub::run,
     },
     CommandSpec {

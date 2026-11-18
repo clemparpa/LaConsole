@@ -13,6 +13,10 @@ fuzz_target!(|data: &[u8]| {
             !la_console::parse::pipe_has_trusted(&node),
             "trusted in pipe for input {input:?}"
         );
+        assert!(
+            !la_console::parse::pipe_has_stream_forbidden(&node),
+            "stream-forbidden command (sub/sed -i after '|', path-less sed elsewhere) for input {input:?}"
+        );
         for cmd in la_console::parse::all_commands(&node) {
             for arg in &cmd.argv {
                 assert!(

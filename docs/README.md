@@ -48,7 +48,9 @@ Whitelist v1 (voir [ROADMAP.md](../ROADMAP.md)) :
 `grep [flags] <pattern> [path...]` (`-i -v -c -n …`, `-f FILE`, `--include/--exclude/--exclude-dir GLOB`, `--exclude-from FILE`, `--all`), `sub <pattern> <repl> <path...>`,
 `sed [-i] s/<pat>/<repl>/[g] <path...>` (alias sed restreint : sans `-i` affiche
 le résultat sur stdout pour prévisualiser, avec `-i` réécrit les fichiers en
-place ; seule la forme `s///` avec le flag `g` est supportée),
+place ; seule la forme `s///` avec le flag `g` est supportée) — et, sans chemin,
+`… | sed s/<pat>/<repl>/[g]` transforme le flux du pipe en position > 0
+(`sed -i` et `sub` restent interdits sur un flux),
 `http <METHOD> <url> [--data b] [--header k:v]` (v1 : `localhost` uniquement),
 les filtres de flux in-process `head [-n N]`, `tail [-n N]`, `wc [-l|-w|-c]`,
 `sort [-r]`, `uniq [-c]`, `cut -d <sep> -f <n[,m...]>`, `tr <from> <to>` (lisent

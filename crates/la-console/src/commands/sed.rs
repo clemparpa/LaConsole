@@ -2,7 +2,8 @@ use super::{collect_paths, read_bounded, write_file, Ctx, ExecError, RawOutput};
 use crate::parse::SimpleCommand;
 use std::sync::Arc;
 
-const USAGE: &str = "sed: usage: sed [-i] s/<pat>/<repl>/[g] <path...>";
+const USAGE: &str =
+    "sed: usage: sed [-i] s/<pat>/<repl>/[g] <path...> (without path: pipe stream only, after '|')";
 
 struct Sub {
     pattern: regex::Regex,
@@ -12,7 +13,7 @@ struct Sub {
 
 pub(crate) fn run(
     cmd: &SimpleCommand,
-    _input: &[u8],
+    input: &[u8],
     ctx: &Ctx,
     quota: &Arc<crate::sink::DiskQuota>,
 ) -> Result<RawOutput, ExecError> {
@@ -31,11 +32,25 @@ pub(crate) fn run(
             break;
         }
     }
-    if args.len() < 2 {
+    if args.is_empty() {
         return Err(ExecError::Fail(USAGE.to_string()));
     }
     let sub = parse_script(&args[0].text)?;
-    let targets = collect_paths(ctx, &args[1..])?;
+    let path_args = &args[1..];
+    if path_args.is_empty() {
+        if in_place {
+            return Err(ExecError::Fail(USAGE.to_string()));
+        }
+        let content = String::from_utf8(input.to_vec())
+            .map_err(|_| ExecError::Fail("sed: input is not valid UTF-8".to_string()))?;
+        let replaced = apply(&sub.pattern, &sub.repl, &content, sub.global);
+        return Ok(RawOutput {
+            code: 0,
+            stdout: replaced.into_bytes(),
+            stderr: Vec::new(),
+        });
+    }
+    let targets = collect_paths(ctx, path_args)?;
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -358,15 +373,186 @@ mod tests {
     }
 
     #[test]
-    fn sed_usage_errors_are_fail() {
-        let dir = tempfile::tempdir().unwrap();
-        for cmd in ["sed", r#"sed "s/a/b/""#, "sed -i"] {
-            let err = run_cmd(&dir, cmd).unwrap_err();
+    fn sed_without_path_outside_stream_position_is_rejected_at_parse() {
+        for cmd in [
+            "sed",
+            r#"sed "s/a/b/""#,
+            "sed -i",
+            r#"sed "s/a/b/" | grep x"#,
+            r#"sed -i "s/a/b/""#,
+        ] {
             assert!(
-                matches!(err, ExecError::Fail(ref m) if m.contains("usage")),
-                "{cmd}: {err:?}"
+                matches!(
+                    parse_input(cmd, &HashMap::new()),
+                    Err(crate::parse::ParseError::SedStreamNeedsPipe)
+                ),
+                "{cmd}"
             );
         }
+    }
+
+    #[test]
+    fn sed_dash_i_and_sub_in_stream_position_are_rejected_at_parse() {
+        assert!(matches!(
+            parse_input(r#"cat a.txt | sed -i "s/a/b/" a.txt"#, &HashMap::new()),
+            Err(crate::parse::ParseError::SedInPlaceInPipe)
+        ));
+        assert!(matches!(
+            parse_input(r#"cat a.txt | sed -i "s/a/b/""#, &HashMap::new()),
+            Err(crate::parse::ParseError::SedInPlaceInPipe)
+        ));
+        assert!(matches!(
+            parse_input("cat a.txt | sub a b c.txt", &HashMap::new()),
+            Err(crate::parse::ParseError::SubInPipe)
+        ));
+        assert!(parse_input(r#"cat a.txt | sed "s/a/b/""#, &HashMap::new()).is_ok());
+        assert!(parse_input(r#"sed -i "s/a/b/" a.txt"#, &HashMap::new()).is_ok());
+        assert!(parse_input("sub a b c.txt | grep x", &HashMap::new()).is_ok());
+    }
+
+    #[test]
+    fn sed_in_place_without_path_stays_fail_closed_at_exec() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolver = Resolver::new(dir.path()).unwrap();
+        let ctx = Ctx {
+            resolver,
+            sensibles: vec![],
+            secrets: vec![],
+            limits: Limits::default(),
+            trusted: None,
+            sandboxed: false,
+            sandbox_shell: None,
+        };
+        let quota = std::sync::Arc::new(crate::sink::DiskQuota::new(
+            ctx.limits.max_command_write_bytes,
+        ));
+        let cmd = crate::parse::SimpleCommand {
+            argv: vec![
+                crate::parse::Arg {
+                    text: "sed".to_string(),
+                    glob: false,
+                },
+                crate::parse::Arg {
+                    text: "-i".to_string(),
+                    glob: false,
+                },
+            ],
+            redirects: vec![],
+        };
+        let err = super::run(&cmd, b"data", &ctx, &quota).unwrap_err();
+        assert!(matches!(err, ExecError::Fail(ref m) if m.contains("usage")));
+    }
+
+    #[test]
+    fn sed_stream_transforms_pipe_input_and_keeps_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "foo bar foo\n").unwrap();
+        let out = run_cmd(&dir, r#"cat a.txt | sed "s/foo/baz/g""#).unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "baz bar baz\n");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "foo bar foo\n"
+        );
+    }
+
+    #[test]
+    fn sed_stream_without_g_replaces_first_occurrence_per_line() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "a a\na a\n").unwrap();
+        let out = run_cmd(&dir, r#"cat a.txt | sed "s/a/b/""#).unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "b a\nb a\n");
+    }
+
+    #[test]
+    fn sed_stream_chains_with_other_pipe_stages() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "foo 1\nbar 2\nfoo 3\n").unwrap();
+        let out = run_cmd(
+            &dir,
+            r#"cat a.txt | sed "s/foo/bar/g" | grep bar | tail -n 1"#,
+        )
+        .unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "(stdin):3:bar 3\n");
+    }
+
+    #[test]
+    fn sed_stream_with_redirect_out_writes_via_file_sink() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "foo bar foo\n").unwrap();
+        let out = run_cmd(&dir, r#"cat a.txt | sed "s/foo/baz/g" > out.txt"#).unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("out.txt")).unwrap(),
+            "baz bar baz\n"
+        );
+    }
+
+    #[test]
+    fn sed_stream_redirect_in_overrides_pipe_input() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "aaa\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "bbb\n").unwrap();
+        let out = run_cmd(&dir, r#"cat a.txt | sed "s/b/c/g" < b.txt"#).unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "ccc\n");
+    }
+
+    #[test]
+    fn sed_stream_invalid_utf8_input_is_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("f.bin"), [0xff, 0xfe, b'a']).unwrap();
+        let err = run_cmd(&dir, r#"cat f.bin | sed "s/a/b/""#).unwrap_err();
+        assert!(matches!(err, ExecError::Fail(ref m) if m.contains("not valid UTF-8")));
+    }
+
+    #[test]
+    fn sed_stream_output_masks_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolver = Resolver::new(dir.path()).unwrap();
+        let ctx = Ctx {
+            resolver,
+            sensibles: vec![],
+            secrets: vec!["tok-abc123".to_string()],
+            limits: Limits::default(),
+            trusted: None,
+            sandboxed: false,
+            sandbox_shell: None,
+        };
+        let node = parse_input(
+            r#"echo "key tok-abc123 end" | sed "s/key/value/""#,
+            &HashMap::new(),
+        )
+        .unwrap();
+        let out = execute(&node, &ctx).unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "value *** end\n");
+    }
+
+    #[test]
+    fn sed_stream_redirect_to_sensitive_file_is_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "A=1\n").unwrap();
+        fs::write(dir.path().join(".env"), "A=1\n").unwrap();
+        let resolver = Resolver::new(dir.path()).unwrap();
+        let ctx = Ctx {
+            resolver,
+            sensibles: vec![regex::Regex::new(r".*\.env$").unwrap()],
+            secrets: vec![],
+            limits: Limits::default(),
+            trusted: None,
+            sandboxed: false,
+            sandbox_shell: None,
+        };
+        let node = parse_input(r#"cat a.txt | sed "s/A/B/" > .env"#, &HashMap::new()).unwrap();
+        assert!(matches!(execute(&node, &ctx), Err(ExecError::Denied(_))));
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".env")).unwrap(),
+            "A=1\n"
+        );
     }
 
     #[test]

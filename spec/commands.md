@@ -19,8 +19,8 @@ sensibles**, même après expansion de glob ou substitution de variable.
 | `ls [path]` | ✅ | `resolve()`, entrées bornées ; respecte `.gitignore` par défaut, `--all` pour tout lister |
 | `echo <text> [> path | >> path]` | ✅ | `resolve()`, taille max, `>` écrase, `>>` append |
 | `grep [flags] <pattern> [path...]` | ✅ | via crate `grep`, fichiers bornés ; respecte `.gitignore` par défaut, `--all` pour tout chercher — chaque fichier matché passe quand même par `resolve()` + bornes ; flags : voir « Commande `grep` — flags » ci-dessous |
-| `sub <pattern> <repl> <path>` (sed-like) | ✅ | substitution via `regex` uniquement, fichiers bornés |
-| `sed [-i] s/<pat>/<repl>/[g] <path...>` | ✅ | alias sed **restreint** : voir ci-dessous |
+| `sub <pattern> <repl> <path>` (sed-like) | ✅ | substitution via `regex` uniquement, fichiers bornés ; **fichier-only** : `denied` dans un pipe (après `|`) |
+| `sed [-i] s/<pat>/<repl>/[g] <path...>`, et `… | sed s/<pat>/<repl>/[g]` (sans chemin, position > 0 du pipe) | ✅ | alias sed **restreint** : voir ci-dessous |
 | `head [-n N] [path...]` / `tail [-n N] [path...]` | ✅ | filtres de flux (paquet B) : voir « Filtres de flux » ci-dessous |
 | `wc [-l\|-w\|-c] [path...]` | ✅ | idem |
 | `sort [-r] [path...]` / `uniq [-c] [path...]` | ✅ | idem |
@@ -58,6 +58,32 @@ sensibles**, même après expansion de glob ou substitution de variable.
   `&` (match entier, traduit en `$0`) ; `\&` = `&` littéral, `\\` = `\` littéral.
 - Cibles : globs autorisés, chaque fichier passe par `resolve()` + sensibles +
   bornes de lecture ; en mode `-i` la réécriture passe par `FileSink`.
+
+### Paquet C de whitelist-expansion (décision actée) : `sed` sur flux
+
+- `sed s/<pat>/<repl>/[g]` **sans opérande de chemin** transforme le flux
+  d'entrée (pipe, ou redirection `<` qui a priorité) et écrit le résultat sur
+  stdout. **Règle de position, enforce au parse** (`parse_pipe`) : accepté
+  uniquement en **position > 0 d'un pipe** ; hors de cette position (commande
+  seule, ou tête de pipe), `sed s/…/…/` sans chemin est rejeté au parse
+  (`SedStreamNeedsPipe`, message d'usage) — il n'y a pas de stdin terminal dans
+  ce protocole, donc rien à lire en position 0.
+- `sed -i` exige au moins un chemin et est **refusé en position de flux**
+  (`SedInPlaceInPipe` au parse) : la réécriture in-place ne passe que par
+  `FileSink`, en commande autonome.
+- `sub` reste **fichier uniquement** : `cat x | sub a b …` = `denied` au parse
+  (`SubInPipe`, message explicite).
+- Compatibilité : `sed s/a/b/ f.txt`, `sed -i s/a/b/ f.txt` et `sub` en tête de
+  pipe inchangés ; `cat x | sed s/a/b/ > out.txt` fonctionne (redirection
+  réservée au dernier élément du pipe, via `FileSink` : resolve + sensibles +
+  quota + masquage, validation avant ouverture).
+- Bornes : entrée déjà bornée en amont (`PipeSink` ≤ `max_output_bytes`,
+  `read_bounded` pour `<`) ; sortie via `PipeSink`/`CallerSink` (troncature +
+  masquage des secrets) ; UTF-8 strict (invalide = `fail`) ; pattern ERE à
+  temps linéaire comme aujourd'hui (`(?m)`, `s///` + `g` uniquement).
+- Invariant testé par proptest/fuzz : `pipe_has_stream_forbidden` — jamais de
+  `sub` ni de `sed -i` après la tête d'un pipe, jamais de `sed` sans chemin
+  hors position de flux.
 
 ## Commande `grep` — flags (paquet A de whitelist-expansion : décision actée)
 

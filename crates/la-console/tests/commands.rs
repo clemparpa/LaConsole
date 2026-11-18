@@ -418,7 +418,6 @@ fn e2e_sed_unsupported_forms_are_precise_fail_errors() {
         (r#"sed "2d" a.txt"#, "unsupported command '2'"),
         (r#"sed "s/a/b/;s/c/d/" a.txt"#, "multi-command"),
         (r#"sed -n "s/a/b/" a.txt"#, "unsupported option '-n'"),
-        ("sed", "usage"),
     ];
     for (cmd, expected) in cases {
         let resp = session.send(cmd);
@@ -428,6 +427,18 @@ fn e2e_sed_unsupported_forms_are_precise_fail_errors() {
         assert!(
             resp["stderr"].as_str().unwrap().contains(expected),
             "{cmd}: stderr {:?} missing {expected:?}",
+            resp["stderr"]
+        );
+    }
+    // Path-less sed outside a stream position is now rejected at parse time.
+    for cmd in ["sed", r#"sed "s/a/b/""#, r#"sed "s/a/b/" | grep x"#] {
+        let resp = session.send(cmd);
+        assert_eq!(resp["ok"], false, "{cmd}");
+        assert_eq!(resp["code"], 2, "{cmd}");
+        assert_eq!(resp["kind"], "denied", "{cmd}");
+        assert!(
+            resp["stderr"].as_str().unwrap().contains("usage"),
+            "{cmd}: stderr {:?}",
             resp["stderr"]
         );
     }

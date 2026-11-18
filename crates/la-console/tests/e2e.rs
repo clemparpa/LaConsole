@@ -235,6 +235,77 @@ fn e2e_trusted_as_pipe_head_pipes_into_whitelist() {
 }
 
 #[test]
+fn e2e_sed_on_stream_in_pipe() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("app.log"),
+        "INFO start\nERROR boom\nINFO end\n",
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let cmds = [
+        r#"cat app.log | sed "s/ERROR/FATAL/" | grep FATAL"#,
+        r#"cat app.log | sed "s/ERROR/FATAL/" > out.txt"#,
+        "cat out.txt",
+        r#"cat app.log | sed -i "s/ERROR/FATAL/" app.log"#,
+        "cat app.log | sub ERROR FATAL app.log",
+        r#"sed "s/a/b/""#,
+        r#"sed "s/a/b/" | grep x"#,
+    ];
+    for cmd in cmds {
+        writeln!(
+            stdin,
+            r#"{{"op": "exec", "cmd": {}}}"#,
+            serde_json::to_string(cmd).unwrap()
+        )
+        .unwrap();
+    }
+    stdin.flush().unwrap();
+
+    let mut next = || {
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        serde_json::from_str::<serde_json::Value>(&line).unwrap()
+    };
+
+    let resp = next();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(resp["stdout"], "(stdin):2:FATAL boom\n");
+
+    let resp = next();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "");
+
+    let resp = next();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "INFO start\nFATAL boom\nINFO end\n");
+
+    for _ in 0..4 {
+        let resp = next();
+        assert_eq!(resp["ok"], false);
+        assert_eq!(resp["code"], 2);
+        assert_eq!(resp["kind"], "denied");
+    }
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("app.log")).unwrap(),
+        "INFO start\nERROR boom\nINFO end\n"
+    );
+}
+
+#[test]
 fn e2e_max_output_bytes_truncates_stdout() {
     let dir = tempfile::tempdir().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
