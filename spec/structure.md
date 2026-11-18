@@ -17,7 +17,7 @@ la-console/
         console.rs    # boucle protocole JSON stdin/stdout, synchrone (std::io, une requete a la fois)
         parse.rs      # parser shell cadré : shell-words + opérateurs whitelistés -> arbre de commandes
         resolve.rs    # resolve() : confinement root, unique point de passage
-        commands/     # cat, ls, echo, grep, sub, http (whitelist)
+        commands/     # whitelist: cat, ls, echo, grep, sed, sub, http + filtres de flux head/tail/wc/sort/uniq/cut/tr (stream.rs = helpers communs)
         trusted.rs    # commandes trusted : parsing + wrapping + checksum + scan + exécution (/bin/sh en mode user, busybox sh dans la cage en mode server)
         sandbox.rs    # mode serveur : unshare userns+chroot, staging du binaire/libs, mini-image de cage (busybox + outillage)
         sink.rs       # trait Sink + FileSink / CallerSink / PipeSink

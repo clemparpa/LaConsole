@@ -1,11 +1,19 @@
 pub mod cat;
+pub mod cut;
 pub mod echo;
 pub mod grep;
+pub mod head;
 pub mod help;
 pub mod http;
 pub mod ls;
 pub mod sed;
+pub mod sort;
+pub(crate) mod stream;
 pub mod sub;
+pub mod tail;
+pub mod tr;
+pub mod uniq;
+pub mod wc;
 
 use std::fs;
 use std::path::PathBuf;
@@ -20,6 +28,9 @@ pub const DEFAULT_MAX_READ_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MAX_LS_ENTRIES: usize = 10_000;
 pub const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 30;
 pub const DEFAULT_MAX_COMMAND_WRITE_BYTES: u64 = 16 * 1024 * 1024;
+/// Default bound on the number of lines a buffering stream filter (`sort`)
+/// may hold in memory.
+pub const DEFAULT_MAX_STREAM_LINES: usize = 100_000;
 
 #[derive(Debug, Clone)]
 pub struct Limits {
@@ -32,6 +43,7 @@ pub struct Limits {
     pub max_grep_matches: usize,
     pub max_grep_globs: usize,
     pub max_grep_patterns: usize,
+    pub max_stream_lines: usize,
     pub max_http_body_bytes: usize,
     pub max_http_response_bytes: usize,
     pub max_http_redirects: usize,
@@ -52,6 +64,7 @@ impl Default for Limits {
             max_grep_matches: grep::DEFAULT_MAX_GREP_MATCHES,
             max_grep_globs: grep::DEFAULT_MAX_GREP_GLOBS,
             max_grep_patterns: grep::DEFAULT_MAX_GREP_PATTERNS,
+            max_stream_lines: DEFAULT_MAX_STREAM_LINES,
             max_http_body_bytes: http::DEFAULT_MAX_HTTP_BODY_BYTES,
             max_http_response_bytes: http::DEFAULT_MAX_HTTP_RESPONSE_BYTES,
             max_http_redirects: http::MAX_REDIRECTS,
@@ -356,6 +369,76 @@ pub static COMMANDS: &[CommandSpec] = &[
         syntaxes: &["sub <pattern> <replacement> <path...>"],
         summary: "regex substitution, rewrites files in place",
         run: sub::run,
+    },
+    CommandSpec {
+        name: "cut",
+        syntaxes: &[
+            "cut -d <sep> -f <n[,m...]> [path...]",
+            "cut -d <sep> -f <n[,m...]> < <path>",
+            "cut -d <sep> -f <n[,m...]> [path...] > <path>",
+        ],
+        summary: "extract fields (1-char delimiter, bounded list) from each line; reads pipe/stdin when no path",
+        run: cut::run,
+    },
+    CommandSpec {
+        name: "head",
+        syntaxes: &[
+            "head [-n N] [path...]",
+            "head [-n N] < <path>",
+            "head [-n N] [path...] > <path>",
+        ],
+        summary: "print the first N lines (default 10, N bounded); streaming",
+        run: head::run,
+    },
+    CommandSpec {
+        name: "sort",
+        syntaxes: &[
+            "sort [-r] [path...]",
+            "sort [-r] < <path>",
+            "sort [-r] [path...] > <path>",
+        ],
+        summary: "sort lines lexicographically (UTF-8), -r reverses; buffered lines bounded by max_stream_lines",
+        run: sort::run,
+    },
+    CommandSpec {
+        name: "tail",
+        syntaxes: &[
+            "tail [-n N] [path...]",
+            "tail [-n N] < <path>",
+            "tail [-n N] [path...] > <path>",
+        ],
+        summary: "print the last N lines (default 10, N bounded); bounded ring buffer",
+        run: tail::run,
+    },
+    CommandSpec {
+        name: "tr",
+        syntaxes: &[
+            "tr <from> <to> [path...]",
+            "tr <from> <to> < <path>",
+            "tr <from> <to> [path...] > <path>",
+        ],
+        summary: "translate characters (simple ranges like a-z, bounded sets); UTF-8 in/out",
+        run: tr::run,
+    },
+    CommandSpec {
+        name: "uniq",
+        syntaxes: &[
+            "uniq [-c] [path...]",
+            "uniq [-c] < <path>",
+            "uniq [-c] [path...] > <path>",
+        ],
+        summary: "drop adjacent duplicate lines (-c prefixes the run count); streaming",
+        run: uniq::run,
+    },
+    CommandSpec {
+        name: "wc",
+        syntaxes: &[
+            "wc [-l|-w|-c] [path...]",
+            "wc [-l|-w|-c] < <path>",
+            "wc [-l|-w|-c] [path...] > <path>",
+        ],
+        summary: "count lines/words/bytes of the input (all three by default); streaming",
+        run: wc::run,
     },
     CommandSpec {
         name: "trusted",
@@ -1032,6 +1115,7 @@ mod helper_tests {
         assert!(l.max_grep_matches > 0);
         assert!(l.max_grep_globs > 0);
         assert!(l.max_grep_patterns > 0);
+        assert!(l.max_stream_lines > 0);
         assert!(l.max_http_body_bytes > 0);
         assert!(l.max_http_response_bytes > 0);
         assert!(l.max_http_redirects > 0);
