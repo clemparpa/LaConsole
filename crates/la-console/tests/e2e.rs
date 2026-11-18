@@ -181,6 +181,60 @@ fn e2e_trusted_denied_when_not_configured() {
 }
 
 #[test]
+fn e2e_trusted_as_pipe_head_pipes_into_whitelist() {
+    let fx = trusted_fixture("lines = printf 'alpha\\nbeta\\ngamma\\n'\n");
+    let mut child = spawn_console(&fx, &fx.sha256);
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(
+        stdin,
+        r#"{{"op": "exec", "cmd": "trusted lines | grep beta"}}"#
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        r#"{{"op": "exec", "cmd": "trusted lines | grep beta > out.txt"}}"#
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        r#"{{"op": "exec", "cmd": "cat a.txt | trusted lines"}}"#
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(resp["stdout"], "(stdin):2:beta\n");
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(resp["stdout"], "");
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+    assert!(resp["stderr"].as_str().unwrap().contains("pipe"));
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    assert_eq!(
+        std::fs::read_to_string(fx.root.path().join("out.txt")).unwrap(),
+        "(stdin):2:beta\n"
+    );
+}
+
+#[test]
 fn e2e_max_output_bytes_truncates_stdout() {
     let dir = tempfile::tempdir().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))

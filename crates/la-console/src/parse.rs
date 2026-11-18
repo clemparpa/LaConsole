@@ -19,7 +19,7 @@ pub enum ParseError {
     AppendStderrUnsupported,
     #[error("parentheses are only allowed as '$(VAR)' variable reference")]
     SubshellParens,
-    #[error("'trusted' command is not allowed in a pipe")]
+    #[error("'trusted' is only allowed as the first command of a pipe (never after '|')")]
     TrustedInPipe,
     #[error("redirection is only allowed on the last command of a pipe")]
     RedirectInPipe,
@@ -101,6 +101,17 @@ pub fn pipe_has_trusted(node: &Node) -> bool {
     match node {
         Node::Seq(nodes) => nodes.iter().any(pipe_has_trusted),
         Node::Pipe(cmds) => cmds.iter().any(is_trusted),
+        Node::Simple(_) => false,
+    }
+}
+
+/// True when a `trusted` command sits in a pipe but not at its head. Only the
+/// head position is allowed: it is the only one that keeps trusted's stdin
+/// closed to piped data (the shell child always runs with stdin null).
+pub fn pipe_has_misplaced_trusted(node: &Node) -> bool {
+    match node {
+        Node::Seq(nodes) => nodes.iter().any(pipe_has_misplaced_trusted),
+        Node::Pipe(cmds) => cmds.iter().skip(1).any(is_trusted),
         Node::Simple(_) => false,
     }
 }
@@ -366,7 +377,7 @@ impl TokenParser<'_> {
             cmds.push(self.parse_simple()?);
         }
         for (idx, cmd) in cmds.iter().enumerate() {
-            if cmds.len() > 1 && is_trusted(cmd) {
+            if cmds.len() > 1 && idx != 0 && is_trusted(cmd) {
                 return Err(ParseError::TrustedInPipe);
             }
             if idx + 1 < cmds.len() && !cmd.redirects.is_empty() {
@@ -842,13 +853,32 @@ mod tests {
     }
 
     #[test]
-    fn rejects_trusted_in_pipe() {
+    fn allows_trusted_only_as_pipe_head() {
+        let node = parse("trusted build | cat log").unwrap();
+        let Node::Pipe(cmds) = node else {
+            panic!("expected Pipe");
+        };
+        assert_eq!(cmds.len(), 2);
+        assert!(is_trusted(&cmds[0]));
+        assert!(!is_trusted(&cmds[1]));
+        let node = parse("ls && trusted build | grep err | cat").unwrap();
+        let Node::Seq(nodes) = node else {
+            panic!("expected Seq");
+        };
+        let Node::Pipe(cmds) = &nodes[1] else {
+            panic!("expected Pipe");
+        };
+        assert!(is_trusted(&cmds[0]));
         assert!(matches!(
-            parse("trusted build | cat log"),
+            parse("cat log | trusted build"),
             Err(ParseError::TrustedInPipe)
         ));
         assert!(matches!(
-            parse("cat log | trusted build"),
+            parse("cat a | trusted build | cat b"),
+            Err(ParseError::TrustedInPipe)
+        ));
+        assert!(matches!(
+            parse("trusted a | trusted b"),
             Err(ParseError::TrustedInPipe)
         ));
     }

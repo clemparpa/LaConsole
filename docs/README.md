@@ -58,8 +58,9 @@ code 2).
 `--trusted-file` (ex. `trusted.txt`, revu en PR), uniquement si le sha256 du
 fichier correspond à `--trusted-sha256` (re-vérifié avant chaque exécution).
 L'exécution se fait dans un shell réduit : `cwd = root`, environnement minimal
-(`HOME` hors du root), stdin fermé, limites `ulimit` sur le sous-processus,
-jamais dans un pipe. Les arguments de chemin passent par `resolve()` +
+(`HOME` hors du root), stdin fermé, limites `ulimit` sur le sous-processus.
+En pipe, `trusted` n'est accepté qu'en tête (`trusted x | grep …`) — jamais
+alimenté par un pipe, son stdin restant fermé. Les arguments de chemin passent par `resolve()` +
 fichiers sensibles, sauf flag `--no-path-check` déclaré dans `trusted.txt`.
 
 ## Documents de référence

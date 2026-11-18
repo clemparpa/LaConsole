@@ -24,7 +24,7 @@ sensibles**, même après expansion de glob ou substitution de variable.
 | `http <METHOD> <url> [--data <body>] [--header k:v]` | ✅ | implémentation **Rust maison** (pas de binaire curl), crate `reqwest` + rustls côté console. Allowlist d'hôtes : v1 = `localhost`/`127.0.0.1`/`::1` uniquement, extensible via liste déclarée par l'humain. Blocage des IP de métadonnées cloud (169.254.169.254) et plages privées non déclarées. Timeout court, taille de réponse bornée, redirects revalidés contre l'allowlist. `--data` borné en taille |
 | `&&` | ✅ | chaînage séquentiel, stop au 1er échec. **Les deux côtés doivent être whitelist ou trusted.** Jamais de vrai shell |
 | `;` | ✅ | interprété comme `&&` (plus strict que bash : stop au 1er échec) |
-| pipes `\|` | ✅ (prévu) | **whitelist uniquement, jamais avec `trusted`** ; la console unwrap le `stdout` de la commande de gauche et le passe en entrée de celle de droite |
+| pipes `\|` | ✅ | whitelist, **plus `trusted` autorisé uniquement comme premier élément du pipe** (`trusted run-tests | grep ERROR`) ; toute autre position = `denied` au parse et le stdin de `trusted` reste fermé (aucun flux pipé ne lui est jamais fourni) ; la console unwrap le `stdout` de la commande de gauche et le passe en entrée de celle de droite |
 | redirections `>`, `>>`, `2>`, `2>&1`, `&>` | ✅ | le chemin de destination passe par la **boucle de validation** (resolve + sensibles + bornes) avant toute exécution. `>>` = append autorisé |
 | redirection `<` (stdin depuis fichier) | ✅ | le fichier source passe par la **boucle de validation** (resolve + sensibles + borne de lecture) avant exécution ; le contenu est lu en mémoire et passé comme entrée à la commande (jamais le stdin du processus, qui appartient au protocole JSON) |
 | globs `*`, `?`, `**` | ✅ | via `wax` ; **chaque fichier matché passe individuellement par `resolve()` + sensibles**, nb de matchs borné |
@@ -69,6 +69,11 @@ sensibles**, même après expansion de glob ou substitution de variable.
 - Invoquées par l'agent via `trusted <nom>` ; la console ne parse pas le
   contenu, elle le passe tel quel à un vrai shell avec `cwd = root` et un
   environnement réduit (variables d'env minimales, `HOME` pointé hors du root).
+- En pipe, `trusted` n'est accepté qu'en **tête** (`trusted <nom> | <whitelist…>`) :
+  sa sortie (bornée via `PipeSink`) alimente les commandes whitelist suivantes ;
+  `whitelist | trusted …` et `a | trusted … | b` sont refusés au parse
+  (`denied`), le stdin du shell trusted restant `null` — aucun octet pipé ne
+  peut donc être interprété par le shell.
 - Leurs arguments de chemin passent par la boucle de validation (resolve +
   sensibles), **sauf flag explicite** déclaré par l'humain dans `trusted.txt`
   (ex. `trusted run-tests --no-path-check`) pour les commandes qui doivent
