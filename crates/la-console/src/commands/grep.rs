@@ -9,6 +9,10 @@ pub const DEFAULT_MAX_GREP_MATCHES: usize = 10_000;
 pub const MAX_CONTEXT_LINES: usize = 100;
 /// Hard bound on the --group-separator length, in bytes.
 pub const MAX_GROUP_SEPARATOR_BYTES: usize = 64;
+/// Default bound on the total number of --include/--exclude/--exclude-dir globs.
+pub const DEFAULT_MAX_GREP_GLOBS: usize = 64;
+/// Hard bound on a single glob filter (--include/--exclude/--exclude-dir), in bytes.
+pub const MAX_GREP_GLOB_BYTES: usize = 256;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum OutMode {
@@ -37,6 +41,9 @@ struct Opts {
     after: usize,
     group_separator: String,
     patterns: Vec<String>,
+    includes: Vec<String>,
+    excludes: Vec<String>,
+    exclude_dirs: Vec<String>,
 }
 
 impl Default for Opts {
@@ -58,6 +65,9 @@ impl Default for Opts {
             after: 0,
             group_separator: "--".to_string(),
             patterns: Vec::new(),
+            includes: Vec::new(),
+            excludes: Vec::new(),
+            exclude_dirs: Vec::new(),
         }
     }
 }
@@ -121,6 +131,18 @@ fn parse_ctx(flag: &str, v: &str) -> Result<usize, ExecError> {
     Ok(n)
 }
 
+fn check_glob(flag: &str, v: &str) -> Result<String, ExecError> {
+    if v.is_empty() || v.contains('\0') {
+        return Err(ExecError::Fail(format!("grep: empty glob for {flag}")));
+    }
+    if v.len() > MAX_GREP_GLOB_BYTES {
+        return Err(ExecError::Fail(format!(
+            "grep: {flag} glob too long (max {MAX_GREP_GLOB_BYTES} bytes)"
+        )));
+    }
+    Ok(v.to_string())
+}
+
 fn short_refused(c: char, raw: &str) -> ExecError {
     let why = match c {
         'P' => "PCRE is a ReDoS risk; the dialect is ERE (-E)",
@@ -153,9 +175,9 @@ fn long_refused(name: &str) -> ExecError {
         "text" => {
             "reading binaries as text is not supported; '-a'/'--all' here means search hidden + gitignored files (ripgrep semantics)"
         }
-        "file" => "reading patterns from a file is not supported yet (v2)",
-        "include" | "exclude" | "exclude-dir" | "exclude-from" => {
-            "not supported yet (v2); .gitignore is always respected unless --all"
+        "file" => "reading patterns from a file is not supported yet (v2, paquet A3)",
+        "exclude-from" => {
+            "not supported yet (v2, paquet A3); use --exclude=GLOB instead"
         }
         _ => "not supported",
     };
@@ -266,6 +288,15 @@ fn parse_opts(args: &[Arg]) -> Result<(Opts, Vec<&Arg>), ExecError> {
                     }
                     o.group_separator = v;
                 }
+                "include" | "exclude" | "exclude-dir" => {
+                    let v = opt_value(&format!("--{name}"), inline, args, &mut i)?;
+                    let v = check_glob(&format!("--{name}"), &v)?;
+                    match name {
+                        "include" => o.includes.push(v),
+                        "exclude" => o.excludes.push(v),
+                        _ => o.exclude_dirs.push(v),
+                    }
+                }
                 other => return Err(long_refused(other)),
             }
         } else if !opts_done && text.starts_with('-') && text.len() > 1 {
@@ -347,6 +378,59 @@ fn split_patterns<'a>(
     }
 }
 
+/// Glob filters for recursive searches, built once per command from
+/// --include/--exclude/--exclude-dir. Applied via `filter_entry`, i.e. after
+/// the walker's own hidden/.gitignore filters, so a glob can never make a
+/// hidden or gitignored file visible without --all.
+struct WalkFilters {
+    files: Option<ignore::overrides::Override>,
+    dirs: Option<ignore::overrides::Override>,
+}
+
+fn build_walk_filters(ctx: &Ctx, opts: &Opts) -> Result<WalkFilters, ExecError> {
+    let total = opts.includes.len() + opts.excludes.len() + opts.exclude_dirs.len();
+    if total > ctx.limits.max_grep_globs {
+        return Err(ExecError::Limit(format!(
+            "grep: too many glob filters (max {})",
+            ctx.limits.max_grep_globs
+        )));
+    }
+    let files = if opts.includes.is_empty() && opts.excludes.is_empty() {
+        None
+    } else {
+        let mut b = ignore::overrides::OverrideBuilder::new(ctx.resolver.root());
+        for g in &opts.includes {
+            b.add(g).map_err(|err| {
+                ExecError::Fail(format!("grep: invalid --include glob '{g}': {err}"))
+            })?;
+        }
+        for g in &opts.excludes {
+            b.add(&format!("!{g}")).map_err(|err| {
+                ExecError::Fail(format!("grep: invalid --exclude glob '{g}': {err}"))
+            })?;
+        }
+        Some(
+            b.build()
+                .map_err(|err| ExecError::Fail(format!("grep: invalid glob filter: {err}")))?,
+        )
+    };
+    let dirs =
+        if opts.exclude_dirs.is_empty() {
+            None
+        } else {
+            let mut b = ignore::overrides::OverrideBuilder::new(ctx.resolver.root());
+            for g in &opts.exclude_dirs {
+                b.add(&format!("!{g}")).map_err(|err| {
+                    ExecError::Fail(format!("grep: invalid --exclude-dir glob '{g}': {err}"))
+                })?;
+            }
+            Some(b.build().map_err(|err| {
+                ExecError::Fail(format!("grep: invalid --exclude-dir glob: {err}"))
+            })?)
+        };
+    Ok(WalkFilters { files, dirs })
+}
+
 pub(crate) fn run(
     cmd: &SimpleCommand,
     input: &[u8],
@@ -378,6 +462,7 @@ pub(crate) fn run(
     let mut searcher = sb.build();
 
     let targets = collect_paths(ctx, path_args.iter().copied())?;
+    let filters = build_walk_filters(ctx, &opts)?;
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -409,6 +494,7 @@ pub(crate) fn run(
     for rel in &targets {
         match search_target(
             ctx,
+            &filters,
             &mut searcher,
             &matcher,
             rel,
@@ -453,6 +539,7 @@ struct FileStats {
 #[allow(clippy::too_many_arguments)]
 fn search_target(
     ctx: &Ctx,
+    filters: &WalkFilters,
     searcher: &mut grep::searcher::Searcher,
     matcher: &grep::regex::RegexMatcher,
     rel: &str,
@@ -476,6 +563,23 @@ fn search_target(
             .git_ignore(!all)
             .git_global(!all)
             .git_exclude(!all);
+        let files_filter = filters.files.clone();
+        let dirs_filter = filters.dirs.clone();
+        walker.filter_entry(move |entry| {
+            if entry.depth() == 0 {
+                return true;
+            }
+            if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                if let Some(dirs) = &dirs_filter {
+                    return !dirs.matched(entry.path(), true).is_ignore();
+                }
+                return true;
+            }
+            if let Some(files) = &files_filter {
+                return !files.matched(entry.path(), false).is_ignore();
+            }
+            true
+        });
         let mut files: Vec<(String, std::path::PathBuf)> = Vec::new();
         for entry in walker.build() {
             let entry = entry.map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
@@ -1146,10 +1250,7 @@ mod tests {
             "grep -R x .",
             "grep -f pats.txt a.txt",
             "grep --text x a.txt",
-            "grep --include=*.txt x .",
-            "grep --exclude=*.txt x .",
             "grep --exclude-from=ex.txt .",
-            "grep --exclude-dir=build .",
             "grep --file=pats.txt x a.txt",
             "grep --label=STDIN x a.txt",
             "grep --binary-files=text x a.txt",
@@ -1287,6 +1388,168 @@ mod tests {
         let out = run_cmd(&dir, "grep -ia hit .").unwrap();
         assert!(out.stdout.contains("a.txt:1:HIT"));
         assert!(out.stdout.contains("b.rs:1:HIT"));
+    }
+
+    #[test]
+    fn grep_include_filters_recursively_at_any_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src/deep")).unwrap();
+        fs::write(dir.path().join("a.rs"), "hit\n").unwrap();
+        fs::write(dir.path().join("src/deep/b.rs"), "hit\n").unwrap();
+        fs::write(dir.path().join("c.txt"), "hit\n").unwrap();
+        let out = run_cmd(&dir, "grep --include=*.rs hit .").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "a.rs:1:hit\nsrc/deep/b.rs:1:hit\n");
+    }
+
+    #[test]
+    fn grep_include_value_as_separate_arg() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.rs"), "hit\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "hit\n").unwrap();
+        let out = run_cmd(&dir, "grep --include '*.rs' hit .").unwrap();
+        assert_eq!(out.stdout, "a.rs:1:hit\n");
+    }
+
+    #[test]
+    fn grep_exclude_and_include_combine() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/a.rs"), "hit\n").unwrap();
+        fs::write(dir.path().join("src/a_test.rs"), "hit\n").unwrap();
+        fs::write(dir.path().join("notes.txt"), "hit\n").unwrap();
+        let out = run_cmd(&dir, "grep --include=*.rs --exclude=*_test.rs hit .").unwrap();
+        assert_eq!(out.stdout, "src/a.rs:1:hit\n");
+    }
+
+    #[test]
+    fn grep_exclude_dir_skips_whole_subtree() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("keep")).unwrap();
+        fs::create_dir_all(dir.path().join("target/gen")).unwrap();
+        fs::write(dir.path().join("keep/hit.txt"), "hit\n").unwrap();
+        fs::write(dir.path().join("target/gen/hit.rs"), "hit\n").unwrap();
+        let out = run_cmd(&dir, "grep --exclude-dir=target hit .").unwrap();
+        assert_eq!(out.stdout, "keep/hit.txt:1:hit\n");
+        let out = run_cmd(&dir, "grep --exclude-dir=gen hit .").unwrap();
+        assert_eq!(out.stdout, "keep/hit.txt:1:hit\n");
+    }
+
+    #[test]
+    fn grep_include_does_not_bypass_hidden_or_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(".hidden.rs"), "hit\n").unwrap();
+        fs::write(dir.path().join("visible.rs"), "hit\n").unwrap();
+        fs::write(dir.path().join("ignored.log"), "hit\n").unwrap();
+        fs::write(dir.path().join("keep.log"), "hit\n").unwrap();
+        fs::write(dir.path().join(".gitignore"), "ignored.log\n").unwrap();
+        let out = run_cmd(&dir, "grep --include=*.rs hit .").unwrap();
+        assert_eq!(out.stdout, "visible.rs:1:hit\n");
+        let out = run_cmd(&dir, "grep --include=*.log hit .").unwrap();
+        assert_eq!(out.stdout, "keep.log:1:hit\n");
+        let out = run_cmd(&dir, "grep -a --include=*.rs hit .").unwrap();
+        assert_eq!(out.stdout, ".hidden.rs:1:hit\nvisible.rs:1:hit\n");
+    }
+
+    #[test]
+    fn grep_glob_filters_do_not_apply_to_explicit_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("c.txt"), "hit\n").unwrap();
+        let out = run_cmd(&dir, "grep --include=*.rs hit c.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "c.txt:1:hit\n");
+    }
+
+    #[test]
+    fn grep_glob_too_long_is_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let long = "a".repeat(super::MAX_GREP_GLOB_BYTES + 1);
+        let err = run_cmd(&dir, &format!("grep --include={long} hit .")).unwrap_err();
+        assert!(matches!(err, ExecError::Fail(ref m) if m.contains("too long")));
+    }
+
+    #[test]
+    fn grep_too_many_glob_filters_is_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "hit\n").unwrap();
+        let mut cmd = String::from("grep");
+        for i in 0..(super::DEFAULT_MAX_GREP_GLOBS + 1) {
+            cmd.push_str(&format!(" --include=g{i}.rs"));
+        }
+        cmd.push_str(" hit .");
+        let err = run_cmd(&dir, &cmd).unwrap_err();
+        assert!(matches!(err, ExecError::Limit(ref m) if m.contains("too many glob filters")));
+    }
+
+    #[test]
+    fn grep_invalid_glob_is_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "hit\n").unwrap();
+        let err = run_cmd(&dir, "grep --include='[a' hit .").unwrap_err();
+        assert!(matches!(err, ExecError::Fail(ref m) if m.contains("invalid --include glob")));
+        let err = run_cmd(&dir, "grep --exclude-dir='[a' hit .").unwrap_err();
+        assert!(matches!(err, ExecError::Fail(ref m) if m.contains("invalid --exclude-dir glob")));
+    }
+
+    #[test]
+    fn grep_glob_filters_never_read_outside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.txt"), "TOPSECRET\n").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            dir.path().join("link.txt"),
+        )
+        .unwrap();
+        fs::write(dir.path().join("inside.txt"), "hit\n").unwrap();
+        let out = run_cmd(&dir, "grep --include=** TOPSECRET .").unwrap();
+        assert_eq!(out.code, 1);
+        assert_eq!(out.stdout, "");
+        let out = run_cmd(&dir, "grep -a --include=** TOPSECRET .").unwrap();
+        assert_eq!(out.code, 1);
+        assert_eq!(out.stdout, "");
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_glob_filters_never_list_symlink_escape(
+            globs in proptest::collection::vec("[a-z*?_.]{1,10}", 0..6),
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            fs::write(outside.path().join("secret.txt"), "LEAKME\n").unwrap();
+            std::os::unix::fs::symlink(outside.path().join("secret.txt"), dir.path().join("link"))
+                .unwrap();
+            fs::write(dir.path().join("inside.txt"), "hit\n").unwrap();
+            let mut cmd = String::from("grep");
+            for g in &globs {
+                cmd.push_str(&format!(" --include={g} --exclude={g}"));
+            }
+            cmd.push_str(" LEAKME .");
+            let node = match parse_input(&cmd, &HashMap::new()) {
+                Ok(n) => n,
+                Err(_) => return Ok(()),
+            };
+            let ctx = Ctx {
+                resolver: Resolver::new(dir.path()).unwrap(),
+                sensibles: vec![],
+                secrets: vec![],
+                limits: Limits::default(),
+                trusted: None,
+                sandboxed: false,
+                sandbox_shell: None,
+            };
+            match execute(&node, &ctx) {
+                Ok(out) => {
+                    let bytes = out.stdout.clone().into_bytes();
+                    let stdout = String::from_utf8_lossy(&bytes);
+                    prop_assert!(!stdout.contains("link"), "symlink escape listed: {stdout}");
+                    prop_assert!(!stdout.contains("LEAKME"), "outside content leaked: {stdout}");
+                }
+                Err(ExecError::Fail(_)) | Err(ExecError::Denied(_)) => {}
+                Err(other) => return Err(proptest::test_runner::TestCaseError::fail(format!("unexpected error: {other:?}"))),
+            }
+        }
     }
 
     proptest! {

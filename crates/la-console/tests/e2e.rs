@@ -609,3 +609,53 @@ fn e2e_server_mode_denies_trusted() {
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }
+
+#[test]
+fn e2e_grep_include_exclude_dir_filters() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::create_dir_all(dir.path().join("target")).unwrap();
+    std::fs::write(dir.path().join("src/a.rs"), "alpha\n").unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "alpha\n").unwrap();
+    std::fs::write(dir.path().join("target/gen.rs"), "alpha\n").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(
+        stdin,
+        r#"{{"op": "exec", "cmd": "grep --include=*.rs --exclude-dir=target alpha ."}}"#
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        r#"{{"op": "exec", "cmd": "grep --include='[bad' alpha ."}}"#
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "src/a.rs:1:alpha\n");
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["kind"], "fail");
+    assert!(resp["stderr"]
+        .as_str()
+        .unwrap()
+        .contains("invalid --include glob"));
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}

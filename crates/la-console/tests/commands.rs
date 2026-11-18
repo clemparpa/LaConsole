@@ -500,7 +500,7 @@ fn e2e_grep_refused_flags_are_fail_not_denied() {
     let mut session = Session::spawn(dir.path());
     for cmd in [
         "grep -P x a.txt",
-        "grep --include=*.txt x .",
+        "grep --exclude-from=ex.txt .",
         "grep -z x a.txt",
     ] {
         let resp = session.send(cmd);

@@ -124,6 +124,7 @@ composables en tête de pipe (PR #30).
 
 1. Ce document, revu et validé (cette PR) ;
 2. Paquet A — flags `grep` ✅ implémenté (décision actée dans `spec/commands.md` : `-F -e -E -i -v -w -x -n -c -o -l -L -m -q -B/-A/-C` acceptés) ;
+2b. Paquet A2 — `--include`/`--exclude`/`--exclude-dir` ✅ implémenté (branche `vibe/grep-globs-a2-3cc883`, décision dans `spec/commands.md` : sémantique gitignore via `ignore::overrides` + `filter_entry` appliqué après `hidden`/`.gitignore` — les filtres ne peuvent jamais désactiver la protection de base ; bornés : 64 globs max, 256 octets/glob, glob invalide = `fail` ; récursif uniquement) ;
 3. Paquet B — filtres de flux (`head`/`tail`/`wc`/`sort`/`uniq`/`cut`/`tr`) ;
 4. Paquet C — `sed` sur flux (règle de position au parse) ;
 5. Paquets D (`json`) et E (`tee`) uniquement si un besoin mesuré les justifie.

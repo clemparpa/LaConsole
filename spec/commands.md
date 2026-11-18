@@ -86,8 +86,8 @@ fichiers cachés et ceux ignorés par `.gitignore`) ; le `-a` de GNU grep
 | `--group-separator=SEP` | séparateur entre groupes de contexte | ✅ accepté avec `-B/-A/-C` (défaut `--`) |
 | `-a`, `--all` | cherche partout (cachés + `.gitignore` ignoré) | ✅ déjà en v1 (sens ripgrep) |
 | `-f FILE`, `--file=FILE` | patterns lus dans un fichier | 🤔 v2 : à étudier (`resolve()` + bornes) |
-| `--include=GLOB`, `--exclude=GLOB`, `--exclude-dir=GLOB` | filtre sur noms de fichiers/dossiers | 🤔 v2 : à réfléchir (`.gitignore` + cachés restent la sécurité de base, même avec `--all`) |
-| `--exclude-from=FILE` | exclusions depuis un fichier | 🤔 v2 (idem `-f`) |
+| `--include=GLOB`, `--exclude=GLOB`, `--exclude-dir=GLOB` | filtre sur noms de fichiers/dossiers (sémantique gitignore, voir détails ci-dessous) | ✅ acceptés (paquet A2) : bornés, récursif uniquement, sans effet sur la protection cachés/`.gitignore` |
+| `--exclude-from=FILE` | exclusions depuis un fichier | 🤔 v2 (idem `-f`, paquet A3 : lecture via `resolve_read_target` + `read_bounded` + bornes) |
 | `-a`, `--text` (sens GNU) | binaires lus comme du texte (ex. images) | 🤔 v2 : à réfléchir ; conflit de sens avec notre `-a` = `--all` |
 | `-G`, `-P`, `-z` | BRE / PCRE (ReDoS) / lignes séparées par `\0` | ❌ refusé `fail` |
 | `-b`, `-h`, `--label` | offset octets / sans nom de fichier / renomme stdin | ❌ refusé (sortie toujours `fichier:ligne:...`) |
@@ -108,6 +108,24 @@ Détails d'implémentation :
   s'applique toujours (dépassée → `limit`, code 3).
 - Plusieurs `-e` = OU entre patterns ; si au moins un `-e` est donné, tous les arguments
   positionnels sont des chemins.
+- Filtres de fichiers `--include=GLOB` / `--exclude=GLOB` / `--exclude-dir=GLOB` (paquet A2) :
+  - sémantique **gitignore** via `ignore::overrides` : un glob sans `/` matche le nom de
+    fichier à n'importe quelle profondeur (`--include='*.rs'` matche `src/a.rs`) ; `*` ne
+    traverse pas `/`, `**` si ; dernier glob matchant gagne (whitelist = include, `!` = exclude) ;
+  - `--include` = whitelist : si au moins un `--include` est présent, seuls les fichiers
+    matchant un include sont cherchés, moins les `--exclude` ;
+  - `--exclude-dir` ne s'applique qu'aux **dossiers** (sous-arbre élagué) ; la racine de la
+    recherche (depth 0) n'est jamais exclue ;
+  - les filtres ne s'appliquent qu'en **recherche récursive** (target = dossier) : un fichier
+    passé explicitement est toujours lu (après `resolve()` + bornes), comme GNU grep ;
+  - ils sont appliqués via `filter_entry` **après** les filtres `hidden`/`.gitignore` du
+    walker : `--include` ne peut donc jamais rendre visible un fichier caché ou ignoré
+    sans `--all` (protection de base inchangée, fail-closed) ;
+  - bornes : longueur d'un glob ≤ 256 octets (`MAX_GREP_GLOB_BYTES`, sinon `fail`), nombre
+    total de globs ≤ `Limits::max_grep_globs` (64 par défaut, sinon `limit`), glob invalide
+    (ex. `[` non fermé) = `fail` explicite ; les globs ne changent que la sélection, jamais
+    l'accès (chaque fichier retenu repasse par `resolve()` + `check_read_bound`,
+    `follow_links(false)`) ; formes `--include=GLOB` et `--include GLOB` acceptées.
 - `--` termine les options (permet un pattern commençant par `-`). `-` seul est refusé
   (`fail`) : sans chemin, l'entrée (pipe ou `<`) est lue automatiquement.
 - Avant `--`, tout argument commençant par `-` (même s'il contient un wildcard) est
