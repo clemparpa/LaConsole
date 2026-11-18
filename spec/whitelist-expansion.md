@@ -69,7 +69,7 @@ Règles communes : UTF-8 invalide = `fail` (comme `sed` aujourd'hui) ; aucune
 option inconnue acceptée ; aucune écriture disque (sauf `tee`, paquet E) ; aucune
 exécution de code.
 
-### C. `sed` sur flux (pas `sub`)
+### C. `sed` sur flux (pas `sub`) — ✅ décision actée, implémenté (branche `vibe/sed-stream-c-090baf`, règle actée dans `spec/commands.md` « Paquet C »)
 
 - `sed s/<pat>/<repl>/[g]` **sans opérande de chemin** transforme le flux d'entrée
   (pipe ou redirection `<`) et écrit le résultat sur stdout. Règle de parse :
@@ -127,5 +127,5 @@ composables en tête de pipe (PR #30).
 2b. Paquet A2 — `--include`/`--exclude`/`--exclude-dir` ✅ implémenté (branche `vibe/grep-globs-a2-3cc883`, décision dans `spec/commands.md` : sémantique gitignore via `ignore::overrides` + `filter_entry` appliqué après `hidden`/`.gitignore` — les filtres ne peuvent jamais désactiver la protection de base ; bornés : 64 globs max, 256 octets/glob, glob invalide = `fail` ; récursif uniquement) ;
 2c. Paquet A3 — `-f`/`--file` (patterns) et `--exclude-from` (globs) ✅ implémenté (même branche, décision dans `spec/commands.md`) : lecture via `read_bounded` (resolve + sensibles + `max_read_bytes`), UTF-8 strict, lignes vides ignorées, `max_grep_patterns` = 10 000, 4096 o/ligne, globs du fichier comptés dans `max_grep_globs`) ;
 3. Paquet B — filtres de flux (`head`/`tail`/`wc`/`sort`/`uniq`/`cut`/`tr`) ✅ implémenté (branche `vibe/stream-filters-b-c4cd4a`, décision actée dans `spec/commands.md` « Filtres de flux » : `Limits::max_stream_lines` = 100 000, `head`/`tail` N ≤ min(10 000, `max_stream_lines`), `cut` ≤ 256 champs, `tr` sets ≤ 1024 chars) ;
-4. Paquet C — `sed` sur flux (règle de position au parse) ;
+4. Paquet C — `sed` sur flux ✅ implémenté (branche `vibe/sed-stream-c-090baf`) : `sed s/…/…/` sans chemin accepté uniquement en position > 0 du pipe (enforce au parse, `SedStreamNeedsPipe` sinon), `sed -i` refusé en position de flux (`SedInPlaceInPipe`), `sub` `denied` en position de flux (`SubInPipe`), UTF-8 strict, proptest/fuzz `pipe_has_stream_forbidden` ;
 5. Paquets D (`json`) et E (`tee`) uniquement si un besoin mesuré les justifie.
