@@ -31,6 +31,7 @@ pub struct Limits {
     pub max_grep_files: usize,
     pub max_grep_matches: usize,
     pub max_grep_globs: usize,
+    pub max_grep_patterns: usize,
     pub max_http_body_bytes: usize,
     pub max_http_response_bytes: usize,
     pub max_http_redirects: usize,
@@ -50,6 +51,7 @@ impl Default for Limits {
             max_grep_files: DEFAULT_MAX_LS_ENTRIES,
             max_grep_matches: grep::DEFAULT_MAX_GREP_MATCHES,
             max_grep_globs: grep::DEFAULT_MAX_GREP_GLOBS,
+            max_grep_patterns: grep::DEFAULT_MAX_GREP_PATTERNS,
             max_http_body_bytes: http::DEFAULT_MAX_HTTP_BODY_BYTES,
             max_http_response_bytes: http::DEFAULT_MAX_HTTP_RESPONSE_BYTES,
             max_http_redirects: http::MAX_REDIRECTS,
@@ -320,7 +322,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             "grep [flags] <pattern> [path...] > <path>",
             "grep [flags] <pattern> [path...] >> <path>",
         ],
-        summary: "search files, ERE dialect; flags: -i -v -w -x -F -c -o -l -L -q -m N -B/-A/-C N (-n always on, -a = --all); file filters --include/--exclude/--exclude-dir GLOB (recursive only, gitignore globs); .gitignore respected unless --all",
+        summary: "search files, ERE dialect; flags: -i -v -w -x -F -c -o -l -L -q -m N -B/-A/-C N (-n always on, -a = --all, -f FILE reads patterns from FILE); file filters --include/--exclude/--exclude-dir GLOB, --exclude-from FILE (recursive only, gitignore globs); .gitignore respected unless --all",
         run: grep::run,
     },
     CommandSpec {
@@ -1029,6 +1031,7 @@ mod helper_tests {
         assert!(l.max_grep_files > 0);
         assert!(l.max_grep_matches > 0);
         assert!(l.max_grep_globs > 0);
+        assert!(l.max_grep_patterns > 0);
         assert!(l.max_http_body_bytes > 0);
         assert!(l.max_http_response_bytes > 0);
         assert!(l.max_http_redirects > 0);

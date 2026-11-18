@@ -85,9 +85,9 @@ fichiers cachés et ceux ignorés par `.gitignore`) ; le `-a` de GNU grep
 | `-B N`, `-A N`, `-C N`, `-N` | N lignes de contexte avant/après/autour | ✅ accepté, N borné (ex. ≤ 100) |
 | `--group-separator=SEP` | séparateur entre groupes de contexte | ✅ accepté avec `-B/-A/-C` (défaut `--`) |
 | `-a`, `--all` | cherche partout (cachés + `.gitignore` ignoré) | ✅ déjà en v1 (sens ripgrep) |
-| `-f FILE`, `--file=FILE` | patterns lus dans un fichier | 🤔 v2 : à étudier (`resolve()` + bornes) |
+| `-f FILE`, `--file=FILE` | patterns lus dans un fichier (un par ligne) | ✅ acceptés (paquet A3) : lecture via `read_bounded` (resolve + sensibles + `max_read_bytes`), UTF-8 strict, ≤ `max_grep_patterns`, ≤ 4096 o/ligne |
 | `--include=GLOB`, `--exclude=GLOB`, `--exclude-dir=GLOB` | filtre sur noms de fichiers/dossiers (sémantique gitignore, voir détails ci-dessous) | ✅ acceptés (paquet A2) : bornés, récursif uniquement, sans effet sur la protection cachés/`.gitignore` |
-| `--exclude-from=FILE` | exclusions depuis un fichier | 🤔 v2 (idem `-f`, paquet A3 : lecture via `resolve_read_target` + `read_bounded` + bornes) |
+| `--exclude-from=FILE` | exclusions depuis un fichier (un glob par ligne) | ✅ acceptés (paquet A3) : idem `-f` en lecture ; chaque ligne = un `--exclude`, comptée dans `max_grep_globs` |
 | `-a`, `--text` (sens GNU) | binaires lus comme du texte (ex. images) | 🤔 v2 : à réfléchir ; conflit de sens avec notre `-a` = `--all` |
 | `-G`, `-P`, `-z` | BRE / PCRE (ReDoS) / lignes séparées par `\0` | ❌ refusé `fail` |
 | `-b`, `-h`, `--label` | offset octets / sans nom de fichier / renomme stdin | ❌ refusé (sortie toujours `fichier:ligne:...`) |
@@ -126,6 +126,17 @@ Détails d'implémentation :
     (ex. `[` non fermé) = `fail` explicite ; les globs ne changent que la sélection, jamais
     l'accès (chaque fichier retenu repasse par `resolve()` + `check_read_bound`,
     `follow_links(false)`) ; formes `--include=GLOB` et `--include GLOB` acceptées.
+- `-f FILE` / `--file=FILE` et `--exclude-from=FILE` (paquet A3) : le fichier est lu via
+  `read_bounded`, donc `resolve()` (pas de sortie du root), refus des fichiers sensibles,
+  fichier régulier uniquement et `max_read_bytes` ; UTF-8 strict (invalide = `fail`) ;
+  lignes vides ignorées ; chaque ligne ≤ 4096 octets (`MAX_GREP_PATTERN_BYTES`, sinon `fail`) ;
+  total ≤ `Limits::max_grep_patterns` (10 000 par défaut, sinon `limit`). Les patterns `-f`
+  sont compilés comme les `-e` (ERE à temps linéaire, ou littéraux avec `-F`) : pattern
+  invalide = `fail` ; `-f` + `-e` = union, et dès qu'un `-f` est donné tous les arguments
+  positionnels sont des chemins ; `-f` sans aucun pattern (fichier vide) = `fail`.
+  `--exclude-from=FILE` : chaque ligne non vide devient un glob `--exclude` (validé à la
+  lecture, invalide = `fail`), et les globs du fichier sont comptés dans `max_grep_globs`.
+  Fuite indirecte couverte : la sortie passe par `CallerSink` (masquage des secrets).
 - `--` termine les options (permet un pattern commençant par `-`). `-` seul est refusé
   (`fail`) : sans chemin, l'entrée (pipe ou `<`) est lue automatiquement.
 - Avant `--`, tout argument commençant par `-` (même s'il contient un wildcard) est

@@ -1,6 +1,8 @@
 use std::fs;
 
-use super::{check_read_bound, collect_paths, resolve_read_target, Ctx, ExecError, RawOutput};
+use super::{
+    check_read_bound, collect_paths, read_bounded, resolve_read_target, Ctx, ExecError, RawOutput,
+};
 use crate::parse::{Arg, SimpleCommand};
 use grep::matcher::Matcher;
 
@@ -13,6 +15,10 @@ pub const MAX_GROUP_SEPARATOR_BYTES: usize = 64;
 pub const DEFAULT_MAX_GREP_GLOBS: usize = 64;
 /// Hard bound on a single glob filter (--include/--exclude/--exclude-dir), in bytes.
 pub const MAX_GREP_GLOB_BYTES: usize = 256;
+/// Default bound on the total number of patterns (-e flags plus -f/--file lines).
+pub const DEFAULT_MAX_GREP_PATTERNS: usize = 10_000;
+/// Hard bound on a single pattern line read from a -f/--file, in bytes.
+pub const MAX_GREP_PATTERN_BYTES: usize = 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum OutMode {
@@ -41,6 +47,8 @@ struct Opts {
     after: usize,
     group_separator: String,
     patterns: Vec<String>,
+    pattern_files: Vec<String>,
+    exclude_from: Vec<String>,
     includes: Vec<String>,
     excludes: Vec<String>,
     exclude_dirs: Vec<String>,
@@ -65,6 +73,8 @@ impl Default for Opts {
             after: 0,
             group_separator: "--".to_string(),
             patterns: Vec::new(),
+            pattern_files: Vec::new(),
+            exclude_from: Vec::new(),
             includes: Vec::new(),
             excludes: Vec::new(),
             exclude_dirs: Vec::new(),
@@ -143,6 +153,61 @@ fn check_glob(flag: &str, v: &str) -> Result<String, ExecError> {
     Ok(v.to_string())
 }
 
+/// Reads patterns from a `-f`/`--file` file through the secured read pipeline:
+/// `read_bounded` = resolve() (no escape) + sensitive-file denial + regular
+/// file only + max_read_bytes. Strict UTF-8, empty lines ignored, per-line and
+/// total bounds enforced. The patterns themselves are compiled later with the
+/// same linear-time regex engine as `-e` patterns.
+fn read_pattern_file(ctx: &Ctx, rel: &str) -> Result<Vec<String>, ExecError> {
+    let bytes = read_bounded(ctx, rel)?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| ExecError::Fail(format!("grep: {rel}: pattern file is not valid UTF-8")))?;
+    let mut pats = Vec::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        if line.len() > MAX_GREP_PATTERN_BYTES {
+            return Err(ExecError::Fail(format!(
+                "grep: {rel}: pattern line too long (max {MAX_GREP_PATTERN_BYTES} bytes)"
+            )));
+        }
+        pats.push(line.to_string());
+    }
+    if pats.len() > ctx.limits.max_grep_patterns {
+        return Err(ExecError::Limit(format!(
+            "grep: {rel}: too many patterns (max {})",
+            ctx.limits.max_grep_patterns
+        )));
+    }
+    Ok(pats)
+}
+
+/// Reads exclude globs from an `--exclude-from` file, same secured read
+/// pipeline and bounds as `read_pattern_file`. Each non-empty line becomes an
+/// `--exclude` glob; the total glob count (command line + file) is bounded in
+/// `build_walk_filters`.
+fn read_glob_file(ctx: &Ctx, rel: &str) -> Result<Vec<String>, ExecError> {
+    let bytes = read_bounded(ctx, rel)?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| ExecError::Fail(format!("grep: {rel}: exclude file is not valid UTF-8")))?;
+    let mut globs = Vec::new();
+    let mut probe = ignore::overrides::OverrideBuilder::new(ctx.resolver.root());
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let g = check_glob("--exclude-from", line)?;
+        probe.add(&format!("!{g}")).map_err(|err| {
+            ExecError::Fail(format!(
+                "grep: {rel}: invalid --exclude-from glob '{line}': {err}"
+            ))
+        })?;
+        globs.push(g);
+    }
+    Ok(globs)
+}
+
 fn short_refused(c: char, raw: &str) -> ExecError {
     let why = match c {
         'P' => "PCRE is a ReDoS risk; the dialect is ERE (-E)",
@@ -155,7 +220,6 @@ fn short_refused(c: char, raw: &str) -> ExecError {
             "reading directories/devices directly is refused; directories are always searched recursively"
         }
         'I' => "already the default: binary files are skipped",
-        'f' => "reading patterns from a file is not supported yet (v2)",
         _ => "not supported",
     };
     ExecError::Fail(format!(
@@ -174,10 +238,6 @@ fn long_refused(name: &str) -> ExecError {
         }
         "text" => {
             "reading binaries as text is not supported; '-a'/'--all' here means search hidden + gitignored files (ripgrep semantics)"
-        }
-        "file" => "reading patterns from a file is not supported yet (v2, paquet A3)",
-        "exclude-from" => {
-            "not supported yet (v2, paquet A3); use --exclude=GLOB instead"
         }
         _ => "not supported",
     };
@@ -288,6 +348,14 @@ fn parse_opts(args: &[Arg]) -> Result<(Opts, Vec<&Arg>), ExecError> {
                     }
                     o.group_separator = v;
                 }
+                "file" => {
+                    let v = opt_value("--file", inline, args, &mut i)?;
+                    o.pattern_files.push(v);
+                }
+                "exclude-from" => {
+                    let v = opt_value("--exclude-from", inline, args, &mut i)?;
+                    o.exclude_from.push(v);
+                }
                 "include" | "exclude" | "exclude-dir" => {
                     let v = opt_value(&format!("--{name}"), inline, args, &mut i)?;
                     let v = check_glob(&format!("--{name}"), &v)?;
@@ -319,7 +387,7 @@ fn parse_opts(args: &[Arg]) -> Result<(Opts, Vec<&Arg>), ExecError> {
                     'E' => {}
                     'F' => o.fixed = true,
                     'r' => {}
-                    'e' | 'm' | 'B' | 'A' | 'C' => {
+                    'e' | 'f' | 'm' | 'B' | 'A' | 'C' => {
                         let rest: String = chars[j + 1..].iter().collect();
                         let v = if !rest.is_empty() {
                             rest
@@ -334,6 +402,7 @@ fn parse_opts(args: &[Arg]) -> Result<(Opts, Vec<&Arg>), ExecError> {
                         };
                         match c {
                             'e' => o.patterns.push(v),
+                            'f' => o.pattern_files.push(v),
                             'm' => o.max_count = Some(parse_num("-m", &v)?),
                             'B' => o.before = parse_ctx("-B", &v)?,
                             'A' => o.after = parse_ctx("-A", &v)?,
@@ -367,12 +436,16 @@ fn split_patterns<'a>(
     opts: &Opts,
     positional: Vec<&'a Arg>,
 ) -> Result<(Vec<String>, Vec<&'a Arg>), ExecError> {
-    if opts.patterns.is_empty() {
+    if opts.patterns.is_empty() && opts.pattern_files.is_empty() {
         let mut it = positional.into_iter();
         match it.next() {
             Some(first) => Ok((vec![first.text.clone()], it.collect())),
             None => Err(ExecError::Fail("grep: missing pattern".to_string())),
         }
+    } else if opts.patterns.is_empty() {
+        Err(ExecError::Fail(
+            "grep: no patterns found in -f/--file file(s)".to_string(),
+        ))
     } else {
         Ok((opts.patterns.clone(), positional))
     }
@@ -437,7 +510,17 @@ pub(crate) fn run(
     ctx: &Ctx,
     _quota: &std::sync::Arc<crate::sink::DiskQuota>,
 ) -> Result<RawOutput, ExecError> {
-    let (opts, positional) = parse_opts(&cmd.argv[1..])?;
+    let (mut opts, positional) = parse_opts(&cmd.argv[1..])?;
+    let pattern_files = opts.pattern_files.clone();
+    for pf in &pattern_files {
+        let pats = read_pattern_file(ctx, pf)?;
+        opts.patterns.extend(pats);
+    }
+    let exclude_from = opts.exclude_from.clone();
+    for ef in &exclude_from {
+        let globs = read_glob_file(ctx, ef)?;
+        opts.excludes.extend(globs);
+    }
     let (patterns, path_args) = split_patterns(&opts, positional)?;
     let mode = resolve_mode(&opts);
 
@@ -1248,10 +1331,7 @@ mod tests {
             "grep -b x a.txt",
             "grep -h x a.txt",
             "grep -R x .",
-            "grep -f pats.txt a.txt",
             "grep --text x a.txt",
-            "grep --exclude-from=ex.txt .",
-            "grep --file=pats.txt x a.txt",
             "grep --label=STDIN x a.txt",
             "grep --binary-files=text x a.txt",
             "grep --color x a.txt",
@@ -1508,6 +1588,141 @@ mod tests {
         let out = run_cmd(&dir, "grep -a --include=** TOPSECRET .").unwrap();
         assert_eq!(out.code, 1);
         assert_eq!(out.stdout, "");
+    }
+
+    #[test]
+    fn grep_file_flag_reads_patterns_one_per_line() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "alpha\nbeta\ngamma\n").unwrap();
+        fs::write(dir.path().join("pats.txt"), "alpha\n\nbeta\n").unwrap();
+        let out = run_cmd(&dir, "grep -f pats.txt a.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "a.txt:1:alpha\na.txt:2:beta\n");
+        let out = run_cmd(&dir, "grep --file=pats.txt a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:alpha\na.txt:2:beta\n");
+    }
+
+    #[test]
+    fn grep_file_and_e_combine_as_union() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "alpha\nbeta\ngamma\n").unwrap();
+        fs::write(dir.path().join("pats.txt"), "alpha\n").unwrap();
+        let out = run_cmd(&dir, "grep -e beta -f pats.txt a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:alpha\na.txt:2:beta\n");
+        let out = run_cmd(&dir, "grep -f pats.txt --file pats.txt a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:alpha\n");
+    }
+
+    #[test]
+    fn grep_file_empty_without_e_is_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("pats.txt"), "\n\n").unwrap();
+        fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+        let err = run_cmd(&dir, "grep -f pats.txt a.txt").unwrap_err();
+        assert!(matches!(err, ExecError::Fail(ref m) if m.contains("no patterns")));
+    }
+
+    #[test]
+    fn grep_file_denies_sensitive_and_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(".env"), "alpha\n").unwrap();
+        let ctx = ctx_with(
+            &dir,
+            vec![regex::Regex::new(r".*\.env$").unwrap()],
+            1024 * 1024,
+        );
+        let node = parse_input("grep -f .env x .", &HashMap::new()).unwrap();
+        assert!(matches!(
+            execute(&node, &ctx).unwrap_err(),
+            ExecError::Denied(_)
+        ));
+        let node = parse_input("grep --exclude-from=.env x .", &HashMap::new()).unwrap();
+        assert!(matches!(
+            execute(&node, &ctx).unwrap_err(),
+            ExecError::Denied(_)
+        ));
+        assert!(matches!(
+            run_cmd(&dir, "grep -f ../pats.txt x .").unwrap_err(),
+            ExecError::Denied(_)
+        ));
+    }
+
+    #[test]
+    fn grep_file_denies_oversized_and_rejects_non_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("big.txt"), vec![b'a'; 2048]).unwrap();
+        let ctx = ctx_with(&dir, vec![], 1024);
+        let node = parse_input("grep -f big.txt x .", &HashMap::new()).unwrap();
+        assert!(matches!(
+            execute(&node, &ctx).unwrap_err(),
+            ExecError::Limit(_)
+        ));
+        fs::write(dir.path().join("bad.bin"), vec![0xff, 0xfe, b'\n']).unwrap();
+        let err = run_cmd(&dir, "grep -f bad.bin x .").unwrap_err();
+        assert!(matches!(err, ExecError::Fail(ref m) if m.contains("UTF-8")));
+    }
+
+    #[test]
+    fn grep_file_rejects_invalid_pattern_and_long_line() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "ok\n").unwrap();
+        fs::write(dir.path().join("pats.txt"), "ok\n[\n").unwrap();
+        let err = run_cmd(&dir, "grep -f pats.txt a.txt").unwrap_err();
+        assert!(matches!(err, ExecError::Fail(ref m) if m.contains("invalid pattern")));
+        let long = "a".repeat(super::MAX_GREP_PATTERN_BYTES + 1);
+        fs::write(dir.path().join("long.txt"), format!("{long}\n")).unwrap();
+        let err = run_cmd(&dir, "grep -f long.txt a.txt").unwrap_err();
+        assert!(matches!(err, ExecError::Fail(ref m) if m.contains("too long")));
+    }
+
+    #[test]
+    fn grep_too_many_patterns_from_file_is_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pats = String::new();
+        for i in 0..11 {
+            pats.push_str(&format!("p{i}\n"));
+        }
+        fs::write(dir.path().join("pats.txt"), pats).unwrap();
+        fs::write(dir.path().join("a.txt"), "p0\n").unwrap();
+        let ctx = Ctx {
+            resolver: Resolver::new(dir.path()).unwrap(),
+            sensibles: vec![],
+            secrets: vec![],
+            limits: Limits {
+                max_grep_patterns: 10,
+                ..Limits::default()
+            },
+            trusted: None,
+            sandboxed: false,
+            sandbox_shell: None,
+        };
+        let node = parse_input("grep -f pats.txt a.txt", &HashMap::new()).unwrap();
+        assert!(matches!(
+            execute(&node, &ctx).unwrap_err(),
+            ExecError::Limit(ref m) if m.contains("too many patterns")
+        ));
+    }
+
+    #[test]
+    fn grep_exclude_from_applies_globs_and_counts_toward_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.rs"), "hit\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "hit\n").unwrap();
+        fs::write(dir.path().join("ex.txt"), "*.txt\n\n").unwrap();
+        let out = run_cmd(&dir, "grep --exclude-from=ex.txt hit .").unwrap();
+        assert_eq!(out.stdout, "a.rs:1:hit\n");
+        let out = run_cmd(&dir, "grep --exclude=*.md --exclude-from=ex.txt hit .").unwrap();
+        assert_eq!(out.stdout, "a.rs:1:hit\n");
+        let mut cmd = String::from("grep --exclude-from=ex.txt");
+        for i in 0..super::DEFAULT_MAX_GREP_GLOBS {
+            cmd.push_str(&format!(" --exclude=g{i}.x"));
+        }
+        cmd.push_str(" hit .");
+        let err = run_cmd(&dir, &cmd).unwrap_err();
+        assert!(matches!(err, ExecError::Limit(ref m) if m.contains("too many glob filters")));
+        fs::write(dir.path().join("bad_ex.txt"), "[a\n").unwrap();
+        let err = run_cmd(&dir, "grep --exclude-from=bad_ex.txt hit .").unwrap_err();
+        assert!(matches!(err, ExecError::Fail(ref m) if m.contains("invalid --exclude-from glob")));
     }
 
     proptest! {
