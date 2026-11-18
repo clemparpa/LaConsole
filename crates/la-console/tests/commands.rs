@@ -429,3 +429,105 @@ fn e2e_sed_unsupported_forms_are_precise_fail_errors() {
         "x\n"
     );
 }
+
+#[test]
+fn e2e_grep_flags_search_log() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("app.log"),
+        "INFO start\nERROR disk full\nerror retry\nINFO ok\n",
+    )
+    .unwrap();
+    let mut session = Session::spawn(dir.path());
+
+    let resp = session.send("grep -i error app.log");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(
+        resp["stdout"].as_str().unwrap(),
+        "app.log:2:ERROR disk full\napp.log:3:error retry\n"
+    );
+
+    let resp = session.send("grep -v INFO app.log");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(
+        resp["stdout"].as_str().unwrap(),
+        "app.log:2:ERROR disk full\napp.log:3:error retry\n"
+    );
+
+    let resp = session.send("grep -c -i error app.log");
+    assert_eq!(resp["stdout"].as_str().unwrap(), "app.log:2\n");
+
+    let resp = session.send("grep -q -i error app.log");
+    assert_eq!(resp["code"], 0);
+    assert_eq!(resp["stdout"].as_str().unwrap(), "");
+
+    let resp = session.send("grep -q nomatch app.log");
+    assert_eq!(resp["code"], 1);
+    assert_eq!(resp["stdout"].as_str().unwrap(), "");
+
+    let resp = session.send("grep -C 1 ERROR app.log");
+    assert_eq!(
+        resp["stdout"].as_str().unwrap(),
+        "app.log-1-INFO start\napp.log:2:ERROR disk full\napp.log-3-error retry\n"
+    );
+}
+
+#[test]
+fn e2e_grep_pipe_with_flags_and_o() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("in.txt"), "foo bar foo\nplain\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("cat in.txt | grep -o foo");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(
+        resp["stdout"].as_str().unwrap(),
+        "(stdin):1:foo\n(stdin):1:foo\n"
+    );
+    let resp = session.send("cat in.txt | grep -v plain");
+    assert_eq!(resp["stdout"].as_str().unwrap(), "(stdin):1:foo bar foo\n");
+    let resp = session.send("grep -l foo in.txt nope.txt");
+    assert_eq!(resp["stdout"].as_str().unwrap(), "in.txt\n");
+    assert_eq!(resp["code"], 0);
+}
+
+#[test]
+fn e2e_grep_refused_flags_are_fail_not_denied() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+    for cmd in [
+        "grep -P x a.txt",
+        "grep --include=*.txt x .",
+        "grep -z x a.txt",
+    ] {
+        let resp = session.send(cmd);
+        assert_eq!(resp["ok"], false, "{cmd}");
+        assert_eq!(resp["code"], 1, "{cmd}");
+        assert_eq!(resp["kind"], "fail", "{cmd}");
+        assert!(
+            resp["stderr"].as_str().unwrap().contains("not supported"),
+            "{cmd}: {:?}",
+            resp["stderr"]
+        );
+    }
+    // path escape is still denied (kind=denied, code 2) even with flags
+    let resp = session.send("grep -v x ../../etc/passwd");
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+}
+
+#[test]
+fn e2e_help_grep_lists_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("help grep");
+    assert_eq!(resp["ok"], true);
+    let stdout = resp["stdout"].as_str().unwrap();
+    assert!(stdout.contains("grep [flags] <pattern> [path...]"));
+    assert!(stdout.contains("-i -v -w -x -F -c -o -l -L -q -m N -B/-A/-C N"));
+    assert!(stdout.contains("--all"));
+}

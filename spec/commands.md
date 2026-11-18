@@ -95,6 +95,28 @@ fichiers cachés et ceux ignorés par `.gitignore`) ; le `-a` de GNU grep
 | `--binary-files=TYPE`, `-I` | politique binaire | ❌ fixée : arrêt sur `\0` (= `-I` implicite, toujours actif) |
 | `--color`, `-U`, `-Z`, `-T`, `-s`, `--line-buffered`, `-V`, `--help` | cosmétiques / meta | ❌ refusé (pas de TTY, v1 Unix-only, `help grep` existe) |
 
+Détails d'implémentation :
+
+- Priorité des modes de sortie (comme GNU) : `-q` > `-l` > `-L` > `-c` > `-o` > lignes.
+  `-l -L` ensemble → `-l` gagne ; `-q -c` → `-q` gagne (stdout vide, code seul).
+- Formats de sortie : match `fichier:ligne:contenu`, ligne de contexte
+  `fichier-ligne-contenu` (tiret), séparateur de groupe sur sa propre ligne (défaut
+  `--`, modifiable par `--group-separator`, borné à 64 octets). Une ligne n'est jamais
+  affichée deux fois (les groupes de contexte chevauchants sont fusionnés).
+- `-B/-A/-C N` bornés à `MAX_CONTEXT_LINES` = 100 (`fail` au-delà). `-m NUM` s'applique
+  **par fichier** ; `-m 0` = aucun match (code 1) ; la borne globale `max_grep_matches`
+  s'applique toujours (dépassée → `limit`, code 3).
+- Plusieurs `-e` = OU entre patterns ; si au moins un `-e` est donné, tous les arguments
+  positionnels sont des chemins.
+- `--` termine les options (permet un pattern commençant par `-`). `-` seul est refusé
+  (`fail`) : sans chemin, l'entrée (pipe ou `<`) est lue automatiquement.
+- Avant `--`, tout argument commençant par `-` (même s'il contient un wildcard) est
+  traité comme une option : parsing strict, option inconnue ou refusée = `fail` avec
+  message explicite.
+- Code de sortie : 0 si au moins une ligne est sélectionnée (tous fichiers confondus),
+  1 sinon. `-v` inverse la sélection avant tout mode de sortie ; `-v -o` produit donc un
+  stdout vide mais code 0 si des lignes sont sélectionnées.
+
 ## Commandes trusted
 
 - Définies par l'humain dans un fichier dédié du dépôt où tourne l'agent (ex.

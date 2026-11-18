@@ -2,8 +2,350 @@ use std::fs;
 
 use super::{check_read_bound, collect_paths, resolve_read_target, Ctx, ExecError, RawOutput};
 use crate::parse::{Arg, SimpleCommand};
+use grep::matcher::Matcher;
 
 pub const DEFAULT_MAX_GREP_MATCHES: usize = 10_000;
+/// Hard bound on -B/-A/-C context lines (memory bound for the searcher buffers).
+pub const MAX_CONTEXT_LINES: usize = 100;
+/// Hard bound on the --group-separator length, in bytes.
+pub const MAX_GROUP_SEPARATOR_BYTES: usize = 64;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OutMode {
+    Lines,
+    Count,
+    FilesWith,
+    FilesWithout,
+    Quiet,
+}
+
+#[derive(Clone, Debug)]
+struct Opts {
+    all: bool,
+    case_insensitive: bool,
+    invert: bool,
+    word: bool,
+    whole_line: bool,
+    fixed: bool,
+    count: bool,
+    only_matching: bool,
+    files_with: bool,
+    files_without: bool,
+    quiet: bool,
+    max_count: Option<u64>,
+    before: usize,
+    after: usize,
+    group_separator: String,
+    patterns: Vec<String>,
+}
+
+impl Default for Opts {
+    fn default() -> Self {
+        Self {
+            all: false,
+            case_insensitive: false,
+            invert: false,
+            word: false,
+            whole_line: false,
+            fixed: false,
+            count: false,
+            only_matching: false,
+            files_with: false,
+            files_without: false,
+            quiet: false,
+            max_count: None,
+            before: 0,
+            after: 0,
+            group_separator: "--".to_string(),
+            patterns: Vec::new(),
+        }
+    }
+}
+
+/// Output-mode priority, same as GNU grep: -q > -l > -L > -c > -o > plain lines.
+fn resolve_mode(o: &Opts) -> OutMode {
+    if o.quiet {
+        OutMode::Quiet
+    } else if o.files_with {
+        OutMode::FilesWith
+    } else if o.files_without {
+        OutMode::FilesWithout
+    } else if o.count {
+        OutMode::Count
+    } else {
+        OutMode::Lines
+    }
+}
+
+fn no_value(flag: &str, inline: Option<String>) -> Result<(), ExecError> {
+    if inline.is_some() {
+        return Err(ExecError::Fail(format!(
+            "grep: option {flag} doesn't take a value"
+        )));
+    }
+    Ok(())
+}
+
+fn opt_value(
+    flag: &str,
+    inline: Option<String>,
+    args: &[Arg],
+    i: &mut usize,
+) -> Result<String, ExecError> {
+    if let Some(v) = inline {
+        return Ok(v);
+    }
+    *i += 1;
+    if *i >= args.len() {
+        return Err(ExecError::Fail(format!(
+            "grep: option {flag} requires an argument"
+        )));
+    }
+    Ok(args[*i].text.clone())
+}
+
+fn parse_num(flag: &str, v: &str) -> Result<u64, ExecError> {
+    v.parse::<u64>()
+        .map_err(|_| ExecError::Fail(format!("grep: invalid number '{v}' for {flag}")))
+}
+
+fn parse_ctx(flag: &str, v: &str) -> Result<usize, ExecError> {
+    let n = v
+        .parse::<usize>()
+        .map_err(|_| ExecError::Fail(format!("grep: invalid number '{v}' for {flag}")))?;
+    if n > MAX_CONTEXT_LINES {
+        return Err(ExecError::Fail(format!(
+            "grep: {flag} too large (max {MAX_CONTEXT_LINES})"
+        )));
+    }
+    Ok(n)
+}
+
+fn short_refused(c: char, raw: &str) -> ExecError {
+    let why = match c {
+        'P' => "PCRE is a ReDoS risk; the dialect is ERE (-E)",
+        'G' => "the dialect is ERE (-E)",
+        'z' => "NUL-separated lines are not supported",
+        'b' => "byte offsets are not supported; line numbers are always shown (-n)",
+        'h' => "the file name is always shown",
+        'R' => "following symlinks is refused (escape vector)",
+        'd' | 'D' => {
+            "reading directories/devices directly is refused; directories are always searched recursively"
+        }
+        'I' => "already the default: binary files are skipped",
+        'f' => "reading patterns from a file is not supported yet (v2)",
+        _ => "not supported",
+    };
+    ExecError::Fail(format!(
+        "grep: option '-{c}' in '{raw}' not supported: {why}"
+    ))
+}
+
+fn long_refused(name: &str) -> ExecError {
+    let why = match name {
+        "perl-regexp" => "PCRE is a ReDoS risk; the dialect is ERE (-E)",
+        "basic-regexp" => "the dialect is ERE (-E)",
+        "null-data" => "NUL-separated lines are not supported",
+        "dereference-recursive" => "following symlinks is refused (escape vector)",
+        "directories" | "devices" | "binary-files" => {
+            "not supported; directories are always searched recursively and binary files always skipped"
+        }
+        "text" => {
+            "reading binaries as text is not supported; '-a'/'--all' here means search hidden + gitignored files (ripgrep semantics)"
+        }
+        "file" => "reading patterns from a file is not supported yet (v2)",
+        "include" | "exclude" | "exclude-dir" | "exclude-from" => {
+            "not supported yet (v2); .gitignore is always respected unless --all"
+        }
+        _ => "not supported",
+    };
+    ExecError::Fail(format!("grep: option --{name} not supported: {why}"))
+}
+
+fn parse_opts(args: &[Arg]) -> Result<(Opts, Vec<&Arg>), ExecError> {
+    let mut o = Opts::default();
+    let mut positional: Vec<&Arg> = Vec::new();
+    let mut i = 0usize;
+    let mut opts_done = false;
+    while i < args.len() {
+        let arg = &args[i];
+        let text = arg.text.as_str();
+        if !opts_done && text == "--" {
+            opts_done = true;
+        } else if !opts_done && text.starts_with("--") && text.len() > 2 {
+            let body = &text[2..];
+            let (name, inline) = match body.find('=') {
+                Some(p) => (&body[..p], Some(body[p + 1..].to_string())),
+                None => (body, None),
+            };
+            match name {
+                "all" => {
+                    no_value("--all", inline)?;
+                    o.all = true;
+                }
+                "ignore-case" => {
+                    no_value("--ignore-case", inline)?;
+                    o.case_insensitive = true;
+                }
+                "no-ignore-case" => {
+                    no_value("--no-ignore-case", inline)?;
+                }
+                "invert-match" => {
+                    no_value("--invert-match", inline)?;
+                    o.invert = true;
+                }
+                "word-regexp" => {
+                    no_value("--word-regexp", inline)?;
+                    o.word = true;
+                }
+                "line-regexp" => {
+                    no_value("--line-regexp", inline)?;
+                    o.whole_line = true;
+                }
+                "line-number" => {
+                    no_value("--line-number", inline)?;
+                }
+                "count" => {
+                    no_value("--count", inline)?;
+                    o.count = true;
+                }
+                "only-matching" => {
+                    no_value("--only-matching", inline)?;
+                    o.only_matching = true;
+                }
+                "files-with-matches" => {
+                    no_value("--files-with-matches", inline)?;
+                    o.files_with = true;
+                }
+                "files-without-match" => {
+                    no_value("--files-without-match", inline)?;
+                    o.files_without = true;
+                }
+                "quiet" | "silent" => {
+                    no_value("--quiet", inline)?;
+                    o.quiet = true;
+                }
+                "extended-regexp" => {
+                    no_value("--extended-regexp", inline)?;
+                }
+                "fixed-strings" => {
+                    no_value("--fixed-strings", inline)?;
+                    o.fixed = true;
+                }
+                "recursive" => {
+                    no_value("--recursive", inline)?;
+                }
+                "regexp" => {
+                    let v = opt_value("--regexp", inline, args, &mut i)?;
+                    o.patterns.push(v);
+                }
+                "max-count" => {
+                    let v = opt_value("--max-count", inline, args, &mut i)?;
+                    o.max_count = Some(parse_num("--max-count", &v)?);
+                }
+                "before-context" => {
+                    let v = opt_value("--before-context", inline, args, &mut i)?;
+                    o.before = parse_ctx("--before-context", &v)?;
+                }
+                "after-context" => {
+                    let v = opt_value("--after-context", inline, args, &mut i)?;
+                    o.after = parse_ctx("--after-context", &v)?;
+                }
+                "context" => {
+                    let v = opt_value("--context", inline, args, &mut i)?;
+                    let n = parse_ctx("--context", &v)?;
+                    o.before = n;
+                    o.after = n;
+                }
+                "group-separator" => {
+                    let v = opt_value("--group-separator", inline, args, &mut i)?;
+                    if v.len() > MAX_GROUP_SEPARATOR_BYTES {
+                        return Err(ExecError::Fail(format!(
+                            "grep: --group-separator too long (max {MAX_GROUP_SEPARATOR_BYTES} bytes)"
+                        )));
+                    }
+                    o.group_separator = v;
+                }
+                other => return Err(long_refused(other)),
+            }
+        } else if !opts_done && text.starts_with('-') && text.len() > 1 {
+            let chars: Vec<char> = text[1..].chars().collect();
+            let mut j = 0usize;
+            while j < chars.len() {
+                let c = chars[j];
+                match c {
+                    'a' => o.all = true,
+                    'i' => o.case_insensitive = true,
+                    'v' => o.invert = true,
+                    'w' => o.word = true,
+                    'x' => o.whole_line = true,
+                    'n' => {}
+                    'c' => o.count = true,
+                    'o' => o.only_matching = true,
+                    'l' => o.files_with = true,
+                    'L' => o.files_without = true,
+                    'q' => o.quiet = true,
+                    'E' => {}
+                    'F' => o.fixed = true,
+                    'r' => {}
+                    'e' | 'm' | 'B' | 'A' | 'C' => {
+                        let rest: String = chars[j + 1..].iter().collect();
+                        let v = if !rest.is_empty() {
+                            rest
+                        } else {
+                            i += 1;
+                            if i >= args.len() {
+                                return Err(ExecError::Fail(format!(
+                                    "grep: option '-{c}' requires an argument"
+                                )));
+                            }
+                            args[i].text.clone()
+                        };
+                        match c {
+                            'e' => o.patterns.push(v),
+                            'm' => o.max_count = Some(parse_num("-m", &v)?),
+                            'B' => o.before = parse_ctx("-B", &v)?,
+                            'A' => o.after = parse_ctx("-A", &v)?,
+                            'C' => {
+                                let n = parse_ctx("-C", &v)?;
+                                o.before = n;
+                                o.after = n;
+                            }
+                            _ => unreachable!(),
+                        }
+                        break;
+                    }
+                    other => return Err(short_refused(other, text)),
+                }
+                j += 1;
+            }
+        } else if !opts_done && text == "-" {
+            return Err(ExecError::Fail(
+                "grep: '-' (stdin) is implicit: omit the path to read stdin".to_string(),
+            ));
+        } else {
+            positional.push(arg);
+        }
+        i += 1;
+    }
+    Ok((o, positional))
+}
+
+#[allow(clippy::needless_lifetimes)]
+fn split_patterns<'a>(
+    opts: &Opts,
+    positional: Vec<&'a Arg>,
+) -> Result<(Vec<String>, Vec<&'a Arg>), ExecError> {
+    if opts.patterns.is_empty() {
+        let mut it = positional.into_iter();
+        match it.next() {
+            Some(first) => Ok((vec![first.text.clone()], it.collect())),
+            None => Err(ExecError::Fail("grep: missing pattern".to_string())),
+        }
+    } else {
+        Ok((opts.patterns.clone(), positional))
+    }
+}
 
 pub(crate) fn run(
     cmd: &SimpleCommand,
@@ -11,63 +353,89 @@ pub(crate) fn run(
     ctx: &Ctx,
     _quota: &std::sync::Arc<crate::sink::DiskQuota>,
 ) -> Result<RawOutput, ExecError> {
-    let mut all = false;
-    let mut positional: Vec<&Arg> = Vec::new();
-    for arg in &cmd.argv[1..] {
-        if !arg.glob && (arg.text == "--all" || arg.text == "-a") {
-            all = true;
-        } else if !arg.glob && arg.text.starts_with('-') && arg.text.len() > 1 {
-            return Err(ExecError::Fail(format!(
-                "grep: unrecognized option '{}'",
-                arg.text
-            )));
-        } else {
-            positional.push(arg);
-        }
-    }
-    if positional.is_empty() {
-        return Err(ExecError::Fail(
-            "grep: missing pattern (stdin is not available)".to_string(),
-        ));
-    }
-    let pattern = positional[0].text.clone();
-    let matcher = grep::regex::RegexMatcher::new(&pattern)
+    let (opts, positional) = parse_opts(&cmd.argv[1..])?;
+    let (patterns, path_args) = split_patterns(&opts, positional)?;
+    let mode = resolve_mode(&opts);
+
+    let mut mb = grep::regex::RegexMatcherBuilder::new();
+    mb.case_insensitive(opts.case_insensitive)
+        .word(opts.word)
+        .whole_line(opts.whole_line)
+        .fixed_strings(opts.fixed);
+    let matcher = mb
+        .build_many(&patterns)
         .map_err(|err| ExecError::Fail(format!("grep: invalid pattern: {err}")))?;
 
-    let targets = collect_paths(ctx, positional[1..].iter().copied())?;
+    let mut sb = grep::searcher::SearcherBuilder::new();
+    sb.line_number(true)
+        .invert_match(opts.invert)
+        .before_context(opts.before)
+        .after_context(opts.after)
+        .binary_detection(grep::searcher::BinaryDetection::quit(b'\0'));
+    if let Some(max) = opts.max_count {
+        sb.max_matches(Some(max));
+    }
+    let mut searcher = sb.build();
+
+    let targets = collect_paths(ctx, path_args.iter().copied())?;
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let mut code = 0u16;
-    let mut match_count = 0usize;
+    let mut found_any = false;
+    let mut global = 0usize;
+    let limit = ctx.limits.max_grep_matches;
+    let sep = opts.group_separator.clone();
+
     if targets.is_empty() {
-        let found = search_slice(
+        let st = search_slice(
+            &mut searcher,
             &matcher,
+            mode,
+            opts.only_matching,
+            &sep,
             "(stdin)",
             input,
             &mut stdout,
-            &mut match_count,
-            ctx.limits.max_grep_matches,
+            &mut global,
+            limit,
         )?;
-        if !found {
-            code = 1;
+        if st.overflow {
+            return Err(ExecError::Limit(format!(
+                "grep: too many matches (max {limit})"
+            )));
         }
+        found_any |= st.found;
     }
     for rel in &targets {
-        match search_target(ctx, &matcher, rel, all, &mut stdout, &mut match_count) {
-            Ok(found) => {
-                if !found {
-                    code = 1;
+        match search_target(
+            ctx,
+            &mut searcher,
+            &matcher,
+            rel,
+            opts.all,
+            mode,
+            opts.only_matching,
+            &sep,
+            &mut stdout,
+            &mut global,
+            limit,
+        ) {
+            Ok(st) => {
+                if st.overflow {
+                    return Err(ExecError::Limit(format!(
+                        "grep: too many matches (max {limit})"
+                    )));
                 }
+                found_any |= st.found;
             }
             Err(ExecError::Denied(msg)) => return Err(ExecError::Denied(msg)),
             Err(ExecError::Limit(msg)) => return Err(ExecError::Limit(msg)),
             Err(ExecError::Fail(msg)) => {
-                code = 1;
                 stderr.extend_from_slice(format!("grep: {msg}\n").as_bytes());
             }
         }
     }
+    let code = if found_any { 0 } else { 1 };
     Ok(RawOutput {
         code,
         stdout,
@@ -75,14 +443,27 @@ pub(crate) fn run(
     })
 }
 
+#[derive(Default)]
+struct FileStats {
+    found: bool,
+    count: u64,
+    overflow: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn search_target(
     ctx: &Ctx,
+    searcher: &mut grep::searcher::Searcher,
     matcher: &grep::regex::RegexMatcher,
     rel: &str,
     all: bool,
+    mode: OutMode,
+    only_matching: bool,
+    sep: &str,
     out: &mut Vec<u8>,
-    match_count: &mut usize,
-) -> Result<bool, ExecError> {
+    global: &mut usize,
+    limit: usize,
+) -> Result<FileStats, ExecError> {
     let (target, meta) = resolve_read_target(ctx, rel)?;
     if meta.is_dir() {
         let mut walker = ignore::WalkBuilder::new(&target);
@@ -122,101 +503,119 @@ fn search_target(
             files.push((entry_rel, entry.path().to_path_buf()));
         }
         files.sort();
-        let mut found_any = false;
+        let mut agg = FileStats::default();
         for (entry_rel, entry_path) in files {
             let fmeta = fs::metadata(&entry_path)
                 .map_err(|err| ExecError::Fail(format!("{entry_rel}: {err}")))?;
             check_read_bound(ctx, &entry_rel, &fmeta)?;
-            let found = search_file(
+            let st = search_file(
+                searcher,
                 matcher,
+                mode,
+                only_matching,
+                sep,
                 &entry_rel,
                 &entry_path,
                 out,
-                match_count,
-                ctx.limits.max_grep_matches,
+                global,
+                limit,
             )?;
-            found_any |= found;
+            agg.found |= st.found;
+            agg.count += st.count;
+            if st.overflow {
+                agg.overflow = true;
+                return Ok(agg);
+            }
         }
-        Ok(found_any)
+        Ok(agg)
     } else if meta.is_file() {
         check_read_bound(ctx, rel, &meta)?;
         search_file(
+            searcher,
             matcher,
+            mode,
+            only_matching,
+            sep,
             rel,
             &target,
             out,
-            match_count,
-            ctx.limits.max_grep_matches,
+            global,
+            limit,
         )
     } else {
         Err(ExecError::Fail(format!("{rel}: not a regular file")))
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn search_slice(
+    searcher: &mut grep::searcher::Searcher,
     matcher: &grep::regex::RegexMatcher,
-    rel: &str,
+    mode: OutMode,
+    only_matching: bool,
+    sep: &str,
+    label: &str,
     data: &[u8],
     out: &mut Vec<u8>,
-    match_count: &mut usize,
+    global: &mut usize,
     limit: usize,
-) -> Result<bool, ExecError> {
-    let mut searcher = grep::searcher::Searcher::new();
-    searcher.set_binary_detection(grep::searcher::BinaryDetection::quit(b'\0'));
+) -> Result<FileStats, ExecError> {
     let mut sink = CollectSink {
-        rel: rel.to_string(),
+        rel: label.to_string(),
+        mode,
+        only_matching,
+        sep,
         out,
-        match_count,
-        found: false,
-        overflow: false,
+        matcher,
+        stats: FileStats::default(),
+        global,
         limit,
     };
     searcher
         .search_slice(matcher, data, &mut sink)
-        .map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
-    if sink.overflow {
-        return Err(ExecError::Limit(format!(
-            "grep: too many matches (max {limit})"
-        )));
-    }
-    Ok(sink.found)
+        .map_err(|err| ExecError::Fail(format!("{label}: {err}")))?;
+    Ok(sink.stats)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn search_file(
+    searcher: &mut grep::searcher::Searcher,
     matcher: &grep::regex::RegexMatcher,
+    mode: OutMode,
+    only_matching: bool,
+    sep: &str,
     rel: &str,
     path: &std::path::Path,
     out: &mut Vec<u8>,
-    match_count: &mut usize,
+    global: &mut usize,
     limit: usize,
-) -> Result<bool, ExecError> {
-    let mut searcher = grep::searcher::Searcher::new();
-    searcher.set_binary_detection(grep::searcher::BinaryDetection::quit(b'\0'));
+) -> Result<FileStats, ExecError> {
     let mut sink = CollectSink {
         rel: rel.to_string(),
+        mode,
+        only_matching,
+        sep,
         out,
-        match_count,
-        found: false,
-        overflow: false,
+        matcher,
+        stats: FileStats::default(),
+        global,
         limit,
     };
     searcher
         .search_path(matcher, path, &mut sink)
         .map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
-    if sink.overflow {
-        return Err(ExecError::Limit(format!(
-            "grep: too many matches (max {limit})"
-        )));
-    }
-    Ok(sink.found)
+    Ok(sink.stats)
 }
 
 struct CollectSink<'a> {
     rel: String,
+    mode: OutMode,
+    only_matching: bool,
+    sep: &'a str,
     out: &'a mut Vec<u8>,
-    match_count: &'a mut usize,
-    found: bool,
-    overflow: bool,
+    matcher: &'a grep::regex::RegexMatcher,
+    stats: FileStats,
+    global: &'a mut usize,
     limit: usize,
 }
 
@@ -228,17 +627,94 @@ impl grep::searcher::Sink for CollectSink<'_> {
         _searcher: &grep::searcher::Searcher,
         mat: &grep::searcher::SinkMatch<'_>,
     ) -> Result<bool, Self::Error> {
-        self.found = true;
-        *self.match_count += 1;
-        if *self.match_count > self.limit {
-            self.overflow = true;
+        self.stats.found = true;
+        *self.global += 1;
+        if *self.global > self.limit {
+            self.stats.overflow = true;
             return Ok(false);
         }
-        let line = String::from_utf8_lossy(mat.bytes());
-        let line_no = mat.line_number().unwrap_or(0);
-        self.out
-            .extend_from_slice(format!("{}:{line_no}:{}\n", self.rel, line.trim_end()).as_bytes());
+        self.stats.count += 1;
+        match self.mode {
+            OutMode::Quiet => Ok(false),
+            OutMode::Count | OutMode::FilesWith | OutMode::FilesWithout => Ok(true),
+            OutMode::Lines => {
+                let line_no = mat.line_number().unwrap_or(0);
+                let line = String::from_utf8_lossy(mat.bytes());
+                let trimmed = line.trim_end();
+                if self.only_matching {
+                    let bytes = trimmed.as_bytes();
+                    let mut at = 0usize;
+                    while at <= bytes.len() {
+                        match self.matcher.find_at(bytes, at) {
+                            Ok(Some(m)) => {
+                                let piece = String::from_utf8_lossy(&bytes[m.start()..m.end()]);
+                                self.out.extend_from_slice(
+                                    format!("{}:{}:{}\n", self.rel, line_no, piece).as_bytes(),
+                                );
+                                at = if m.end() > m.start() {
+                                    m.end()
+                                } else {
+                                    m.end() + 1
+                                };
+                            }
+                            Ok(None) => break,
+                            Err(_) => break,
+                        }
+                    }
+                } else {
+                    self.out.extend_from_slice(
+                        format!("{}:{}:{}\n", self.rel, line_no, trimmed).as_bytes(),
+                    );
+                }
+                Ok(true)
+            }
+        }
+    }
+
+    fn context(
+        &mut self,
+        _searcher: &grep::searcher::Searcher,
+        ctx: &grep::searcher::SinkContext<'_>,
+    ) -> Result<bool, Self::Error> {
+        if self.mode == OutMode::Lines {
+            let line = String::from_utf8_lossy(ctx.bytes());
+            let line_no = ctx.line_number().unwrap_or(0);
+            self.out.extend_from_slice(
+                format!("{}-{}-{}\n", self.rel, line_no, line.trim_end()).as_bytes(),
+            );
+        }
         Ok(true)
+    }
+
+    fn context_break(&mut self, _searcher: &grep::searcher::Searcher) -> Result<bool, Self::Error> {
+        if self.mode == OutMode::Lines {
+            self.out
+                .extend_from_slice(format!("{}\n", self.sep).as_bytes());
+        }
+        Ok(true)
+    }
+
+    fn finish(
+        &mut self,
+        _searcher: &grep::searcher::Searcher,
+        _fin: &grep::searcher::SinkFinish,
+    ) -> Result<(), Self::Error> {
+        match self.mode {
+            OutMode::Count => {
+                self.out
+                    .extend_from_slice(format!("{}:{}\n", self.rel, self.stats.count).as_bytes());
+            }
+            OutMode::FilesWith if self.stats.found => {
+                self.out
+                    .extend_from_slice(format!("{}\n", self.rel).as_bytes());
+            }
+            OutMode::FilesWithout if !self.stats.found => {
+                self.out
+                    .extend_from_slice(format!("{}\n", self.rel).as_bytes());
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }
 
@@ -247,6 +723,7 @@ mod tests {
     use super::super::{execute, Ctx, ExecError, ExecOutcome, Limits};
     use crate::parse::parse_input;
     use crate::resolve::Resolver;
+    use proptest::prelude::*;
     use std::collections::HashMap;
     use std::fs;
 
@@ -263,6 +740,21 @@ mod tests {
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
+    }
+
+    fn ctx_with(dir: &tempfile::TempDir, sensibles: Vec<regex::Regex>, max_read: usize) -> Ctx {
+        Ctx {
+            resolver: Resolver::new(dir.path()).unwrap(),
+            sensibles,
+            secrets: vec![],
+            limits: Limits {
+                max_read_bytes: max_read,
+                ..Limits::default()
+            },
+            trusted: None,
+            sandboxed: false,
+            sandbox_shell: None,
+        }
     }
 
     #[test]
@@ -324,17 +816,11 @@ mod tests {
             ExecError::Denied(_)
         ));
         fs::write(dir.path().join(".env"), "SECRET=1\n").unwrap();
-        let resolver = Resolver::new(dir.path()).unwrap();
-        let sensibles = vec![regex::Regex::new(r".*\.env$").unwrap()];
-        let ctx = Ctx {
-            resolver,
-            sensibles,
-            secrets: vec![],
-            limits: Limits::default(),
-            trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
-        };
+        let ctx = ctx_with(
+            &dir,
+            vec![regex::Regex::new(r".*\.env$").unwrap()],
+            1024 * 1024,
+        );
         let node = parse_input("grep SECRET .env", &HashMap::new()).unwrap();
         assert!(matches!(
             execute(&node, &ctx).unwrap_err(),
@@ -346,19 +832,7 @@ mod tests {
     fn grep_denies_oversized_file() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("big.txt"), vec![b'a'; 2048]).unwrap();
-        let resolver = Resolver::new(dir.path()).unwrap();
-        let ctx = Ctx {
-            resolver,
-            sensibles: vec![],
-            secrets: vec![],
-            limits: Limits {
-                max_read_bytes: 1024,
-                ..Limits::default()
-            },
-            trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
-        };
+        let ctx = ctx_with(&dir, vec![], 1024);
         let node = parse_input("grep a big.txt", &HashMap::new()).unwrap();
         assert!(matches!(
             execute(&node, &ctx).unwrap_err(),
@@ -397,5 +871,458 @@ mod tests {
         fs::write(dir.path().join("text.txt"), "hit\n").unwrap();
         let out = run_cmd(&dir, "grep hit .").unwrap();
         assert_eq!(out.stdout, "text.txt:1:hit\n");
+    }
+
+    // ---- flags ----
+
+    #[test]
+    fn grep_flag_i_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("log.txt"), "ERROR one\nerror two\nok\n").unwrap();
+        let out = run_cmd(&dir, "grep -i error log.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "log.txt:1:ERROR one\nlog.txt:2:error two\n");
+        let out = run_cmd(&dir, "grep --ignore-case ERROR log.txt").unwrap();
+        assert_eq!(out.stdout, "log.txt:1:ERROR one\nlog.txt:2:error two\n");
+    }
+
+    #[test]
+    fn grep_flag_v_invert() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("log.txt"), "INFO a\nERROR b\nINFO c\n").unwrap();
+        let out = run_cmd(&dir, "grep -v INFO log.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "log.txt:2:ERROR b\n");
+        let out = run_cmd(&dir, "grep -v 'INFO|ERROR' log.txt").unwrap();
+        assert_eq!(out.code, 1);
+        assert_eq!(out.stdout, "");
+    }
+
+    #[test]
+    fn grep_flag_w_word() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "cat\nconcatenate\ncatapult\n").unwrap();
+        let out = run_cmd(&dir, "grep -w cat a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:cat\n");
+    }
+
+    #[test]
+    fn grep_flag_x_whole_line() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "INFO\nINFO extra\n").unwrap();
+        let out = run_cmd(&dir, "grep -x INFO a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:INFO\n");
+    }
+
+    #[test]
+    fn grep_flag_f_fixed_strings() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "a.b\naxb\na*b\n").unwrap();
+        let out = run_cmd(&dir, "grep -F 'a.b' a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:a.b\n");
+        let out = run_cmd(&dir, "grep -F 'a*b' a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:3:a*b\n");
+        fs::write(dir.path().join("b.txt"), "x [ y\n").unwrap();
+        let out = run_cmd(&dir, "grep -F '[' b.txt").unwrap();
+        assert_eq!(out.stdout, "b.txt:1:x [ y\n");
+        let err = run_cmd(&dir, "grep '[' b.txt").unwrap_err();
+        assert!(matches!(err, ExecError::Fail(m) if m.contains("invalid pattern")));
+    }
+
+    #[test]
+    fn grep_flag_e_explicit_and_multiple_patterns_are_or() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "foo\nbar\nbaz\n").unwrap();
+        let out = run_cmd(&dir, "grep -e foo -e bar a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:foo\na.txt:2:bar\n");
+        let out = run_cmd(&dir, "grep --regexp=foo --regexp bar a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:foo\na.txt:2:bar\n");
+        let out = run_cmd(&dir, "grep -efoo -ebar a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:foo\na.txt:2:bar\n");
+        fs::write(dir.path().join("bar"), "foo inside bar\n").unwrap();
+        let out = run_cmd(&dir, "grep -e foo a.txt bar").unwrap();
+        assert!(out.stdout.contains("a.txt:1:foo"));
+        assert!(out.stdout.contains("bar:1:foo inside bar"));
+    }
+
+    #[test]
+    fn grep_flags_e_and_n_are_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "foo one\nbar\n").unwrap();
+        let plain = run_cmd(&dir, "grep foo a.txt").unwrap();
+        let out = run_cmd(&dir, "grep -E -n foo a.txt").unwrap();
+        assert_eq!(out.stdout, plain.stdout);
+        let out = run_cmd(&dir, "grep --extended-regexp --line-number foo a.txt").unwrap();
+        assert_eq!(out.stdout, plain.stdout);
+    }
+
+    #[test]
+    fn grep_flag_c_counts_per_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "x\nx\ny\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "nothing\n").unwrap();
+        let out = run_cmd(&dir, "grep -c x a.txt b.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "a.txt:2\nb.txt:0\n");
+        let out = run_cmd(&dir, "grep -c zzz a.txt b.txt").unwrap();
+        assert_eq!(out.code, 1);
+        assert_eq!(out.stdout, "a.txt:0\nb.txt:0\n");
+    }
+
+    #[test]
+    fn grep_code_zero_if_any_file_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "nothing\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "hit\n").unwrap();
+        let out = run_cmd(&dir, "grep hit a.txt b.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "b.txt:1:hit\n");
+    }
+
+    #[test]
+    fn grep_flag_o_only_matching() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "foo bar foo\n").unwrap();
+        let out = run_cmd(&dir, "grep -o foo a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:foo\na.txt:1:foo\n");
+        let out = run_cmd(&dir, "grep -o 'b.r' a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:bar\n");
+    }
+
+    #[test]
+    fn grep_flags_l_and_l_list_file_names() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "hit\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "nope\n").unwrap();
+        let out = run_cmd(&dir, "grep -l hit a.txt b.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "a.txt\n");
+        let out = run_cmd(&dir, "grep -L hit a.txt b.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "b.txt\n");
+        let out = run_cmd(&dir, "grep -l -L hit a.txt b.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt\n");
+    }
+
+    #[test]
+    fn grep_flag_q_quiet_exit_code_only() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "error here\n").unwrap();
+        let out = run_cmd(&dir, "grep -q error a.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "");
+        let out = run_cmd(&dir, "grep -q zzz a.txt").unwrap();
+        assert_eq!(out.code, 1);
+        assert_eq!(out.stdout, "");
+        let out = run_cmd(&dir, "grep -q -c error a.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "");
+    }
+
+    #[test]
+    fn grep_flag_m_max_count_per_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "x\nx\nx\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "x\nx\nx\nx\n").unwrap();
+        let out = run_cmd(&dir, "grep -m 2 x a.txt b.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "a.txt:1:x\na.txt:2:x\nb.txt:1:x\nb.txt:2:x\n");
+        let out = run_cmd(&dir, "grep -m 0 x a.txt").unwrap();
+        assert_eq!(out.code, 1);
+        assert_eq!(out.stdout, "");
+        let out = run_cmd(&dir, "grep -c -m 1 x a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1\n");
+    }
+
+    #[test]
+    fn grep_context_b_a_c() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("log.txt"),
+            "l1\nERR l2\nl3\nl4\nl5\nERR l6\nl7\n",
+        )
+        .unwrap();
+        let out = run_cmd(&dir, "grep -C 1 ERR log.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(
+            out.stdout,
+            "log.txt-1-l1\nlog.txt:2:ERR l2\nlog.txt-3-l3\n--\nlog.txt-5-l5\nlog.txt:6:ERR l6\nlog.txt-7-l7\n"
+        );
+        let out = run_cmd(&dir, "grep -B 1 ERR log.txt").unwrap();
+        assert_eq!(
+            out.stdout,
+            "log.txt-1-l1\nlog.txt:2:ERR l2\n--\nlog.txt-5-l5\nlog.txt:6:ERR l6\n"
+        );
+        let out = run_cmd(&dir, "grep -A 1 ERR log.txt").unwrap();
+        assert_eq!(
+            out.stdout,
+            "log.txt:2:ERR l2\nlog.txt-3-l3\n--\nlog.txt:6:ERR l6\nlog.txt-7-l7\n"
+        );
+        let out = run_cmd(&dir, "grep --context=1 ERR log.txt").unwrap();
+        assert!(out.stdout.contains("log.txt-1-l1"));
+        let out = run_cmd(
+            &dir,
+            "grep --before-context 1 --after-context 1 ERR log.txt",
+        )
+        .unwrap();
+        assert!(out.stdout.contains("log.txt-3-l3"));
+    }
+
+    #[test]
+    fn grep_context_merges_overlapping_groups_without_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "x\ny\nx\n").unwrap();
+        let out = run_cmd(&dir, "grep -C 2 x a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:x\na.txt-2-y\na.txt:3:x\n");
+    }
+
+    #[test]
+    fn grep_group_separator_custom_and_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "x\na\nmid\nb\nx\n").unwrap();
+        let out = run_cmd(&dir, "grep -C 1 --group-separator=@@ x a.txt").unwrap();
+        assert_eq!(
+            out.stdout,
+            "a.txt:1:x\na.txt-2-a\n@@\na.txt-4-b\na.txt:5:x\n"
+        );
+        let long_sep = "0123456789".repeat(7);
+        let err = run_cmd(
+            &dir,
+            &format!("grep -C 1 --group-separator={long_sep} x a.txt"),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ExecError::Fail(m) if m.contains("group-separator too long")));
+    }
+
+    #[test]
+    fn grep_short_flags_combine_and_values_attach() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "ERROR one\nerror two\nok\n").unwrap();
+        let out = run_cmd(&dir, "grep -vi error a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:3:ok\n");
+        fs::write(dir.path().join("b.txt"), "x\nx\nx\n").unwrap();
+        let out = run_cmd(&dir, "grep -m2 x b.txt").unwrap();
+        assert_eq!(out.stdout, "b.txt:1:x\nb.txt:2:x\n");
+        let out = run_cmd(&dir, "grep -efoo a.txt").unwrap();
+        assert_eq!(out.code, 1);
+        let out = run_cmd(&dir, "grep -C1 error a.txt").unwrap();
+        assert!(out.stdout.contains("a.txt-3-ok"));
+        let err = run_cmd(&dir, "grep -c2 error a.txt").unwrap_err();
+        assert!(matches!(err, ExecError::Fail(_)));
+    }
+
+    #[test]
+    fn grep_long_options_with_separate_or_inline_values() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "x\nx\nx\n").unwrap();
+        let out = run_cmd(&dir, "grep --max-count=2 x a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:x\na.txt:2:x\n");
+        let out = run_cmd(&dir, "grep --max-count 2 x a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:x\na.txt:2:x\n");
+        let out = run_cmd(&dir, "grep --regexp=x a.txt").unwrap();
+        assert_eq!(out.code, 0);
+        let out = run_cmd(&dir, "grep --count --max-count 1 x a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1\n");
+    }
+
+    #[test]
+    fn grep_double_dash_ends_options() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "-dash\nplain\n").unwrap();
+        let out = run_cmd(&dir, "grep -- - a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:-dash\n");
+    }
+
+    #[test]
+    fn grep_refused_flags_are_fail_with_message() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+        for cmd in [
+            "grep -P 'x' a.txt",
+            "grep -G x a.txt",
+            "grep -z x a.txt",
+            "grep -b x a.txt",
+            "grep -h x a.txt",
+            "grep -R x .",
+            "grep -f pats.txt a.txt",
+            "grep --text x a.txt",
+            "grep --include=*.txt x .",
+            "grep --exclude=*.txt x .",
+            "grep --exclude-from=ex.txt .",
+            "grep --exclude-dir=build .",
+            "grep --file=pats.txt x a.txt",
+            "grep --label=STDIN x a.txt",
+            "grep --binary-files=text x a.txt",
+            "grep --color x a.txt",
+            "grep -Q x a.txt",
+            "grep --nope x a.txt",
+        ] {
+            let err = run_cmd(&dir, cmd).unwrap_err();
+            assert!(
+                matches!(&err, ExecError::Fail(m) if m.contains("not supported") || m.contains("unrecognized")),
+                "cmd {cmd:?} -> {err:?}"
+            );
+        }
+        let err = run_cmd(&dir, "grep -P x a.txt").unwrap_err();
+        assert!(matches!(err, ExecError::Fail(m) if m.contains("ERE")));
+    }
+
+    #[test]
+    fn grep_dash_alone_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = run_cmd(&dir, "grep x -").unwrap_err();
+        assert!(matches!(err, ExecError::Fail(m) if m.contains("stdin")));
+    }
+
+    #[test]
+    fn grep_context_too_large_is_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+        let err = run_cmd(&dir, "grep -C 101 x a.txt").unwrap_err();
+        assert!(matches!(err, ExecError::Fail(m) if m.contains("too large")));
+        let err = run_cmd(&dir, "grep --context=99999999999999999999 x a.txt").unwrap_err();
+        assert!(
+            matches!(err, ExecError::Fail(m) if m.contains("invalid number") || m.contains("too large"))
+        );
+        let err = run_cmd(&dir, "grep -m abc x a.txt").unwrap_err();
+        assert!(matches!(err, ExecError::Fail(m) if m.contains("invalid number")));
+        let err = run_cmd(&dir, "grep -m").unwrap_err();
+        assert!(matches!(err, ExecError::Fail(m) if m.contains("requires an argument")));
+    }
+
+    #[test]
+    fn grep_mode_priority_l_over_c() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "x\nx\n").unwrap();
+        let out = run_cmd(&dir, "grep -c -l x a.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt\n");
+    }
+
+    #[test]
+    fn grep_v_with_o_prints_nothing_but_code_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        let out = run_cmd(&dir, "grep -v -o x a.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "");
+    }
+
+    #[test]
+    fn grep_flags_do_not_weaken_path_security() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            run_cmd(&dir, "grep -v x ../secret.txt").unwrap_err(),
+            ExecError::Denied(_)
+        ));
+        assert!(matches!(
+            run_cmd(&dir, "grep -i -l x /etc/passwd").unwrap_err(),
+            ExecError::Denied(_)
+        ));
+        fs::write(dir.path().join(".env"), "SECRET=1\n").unwrap();
+        let ctx = ctx_with(
+            &dir,
+            vec![regex::Regex::new(r".*\.env$").unwrap()],
+            1024 * 1024,
+        );
+        let node = parse_input("grep -i SECRET .env", &HashMap::new()).unwrap();
+        assert!(matches!(
+            execute(&node, &ctx).unwrap_err(),
+            ExecError::Denied(_)
+        ));
+    }
+
+    #[test]
+    fn grep_too_many_matches_is_limit_even_with_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut content = String::new();
+        for _ in 0..50 {
+            content.push_str("hit\n");
+        }
+        fs::write(dir.path().join("a.txt"), content).unwrap();
+        let ctx = Ctx {
+            resolver: Resolver::new(dir.path()).unwrap(),
+            sensibles: vec![],
+            secrets: vec![],
+            limits: Limits {
+                max_grep_matches: 10,
+                ..Limits::default()
+            },
+            trusted: None,
+            sandboxed: false,
+            sandbox_shell: None,
+        };
+        for cmd in ["grep hit a.txt", "grep -o hit a.txt", "grep -v zzz a.txt"] {
+            let node = parse_input(cmd, &HashMap::new()).unwrap();
+            assert!(
+                matches!(execute(&node, &ctx).unwrap_err(), ExecError::Limit(_)),
+                "cmd {cmd:?} should hit the match limit"
+            );
+        }
+    }
+
+    #[test]
+    fn grep_binary_skipped_even_with_invert() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("bin.dat"), b"hit\0hit\n").unwrap();
+        let out = run_cmd(&dir, "grep -v zzz bin.dat").unwrap();
+        assert_eq!(out.code, 1);
+        assert_eq!(out.stdout, "");
+    }
+
+    #[test]
+    fn grep_flags_work_on_globs_stdin_and_pipes() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "HIT\n").unwrap();
+        fs::write(dir.path().join("b.rs"), "HIT\n").unwrap();
+        let out = run_cmd(&dir, "grep -i hit *.txt").unwrap();
+        assert_eq!(out.stdout, "a.txt:1:HIT\n");
+        fs::write(dir.path().join("in.txt"), "Foo Bar\nbaz\n").unwrap();
+        let out = run_cmd(&dir, "grep -i foo < in.txt").unwrap();
+        assert_eq!(out.stdout, "(stdin):1:Foo Bar\n");
+        let out = run_cmd(&dir, "cat in.txt | grep -v baz").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "(stdin):1:Foo Bar\n");
+        let out = run_cmd(&dir, "cat in.txt | grep -o -i foo").unwrap();
+        assert_eq!(out.stdout, "(stdin):1:Foo\n");
+        let out = run_cmd(&dir, "grep -ia hit .").unwrap();
+        assert!(out.stdout.contains("a.txt:1:HIT"));
+        assert!(out.stdout.contains("b.rs:1:HIT"));
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_random_pattern_and_flag_never_panics(
+            pattern in ".*",
+            flag in prop::sample::select(vec!["-i", "-v", "-w", "-x", "-F", "-c", "-o", "-l", "-L", "-q", "-n", "-E", "-a", "-vi", "-cF", "--invert-match", "--count"]),
+        ) {
+            prop_assume!(!pattern.contains('\0'));
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(dir.path().join("a.txt"), "hello ERROR world\nfoo bar\n").unwrap();
+            let quoted = shell_words::quote(&pattern);
+            let cmd = format!("grep {flag} -e {quoted} a.txt");
+            let node = match parse_input(&cmd, &HashMap::new()) {
+                Ok(n) => n,
+                Err(_) => return Ok(()),
+            };
+            let ctx = Ctx {
+                resolver: Resolver::new(dir.path()).unwrap(),
+                sensibles: vec![],
+                secrets: vec![],
+                limits: Limits::default(),
+                trusted: None,
+                sandboxed: false,
+                sandbox_shell: None,
+            };
+            match execute(&node, &ctx) {
+                Ok(out) => {
+                    prop_assert!(out.code == 0 || out.code == 1, "unexpected code {}", out.code);
+                    prop_assert!(String::from_utf8(out.stdout.clone().into_bytes()).is_ok(), "stdout not utf8");
+                }
+                // fail-closed refusals are fine (usage error or security refusal);
+                // anything else (limit) would be a bug for this tiny input
+                Err(ExecError::Fail(_)) | Err(ExecError::Denied(_)) => {}
+                Err(other) => return Err(proptest::test_runner::TestCaseError::fail(format!("unexpected error: {other:?}"))),
+            }
+        }
     }
 }

@@ -123,7 +123,7 @@ composables en tête de pipe (PR #30).
 ## Phases proposées
 
 1. Ce document, revu et validé (cette PR) ;
-2. Paquet A — flags `grep` (décision actée dans `spec/commands.md` : `-F -e -E -i -v -w -x -n -c -o -l -L -m -q -B/-A/-C` acceptés) ;
+2. Paquet A — flags `grep` ✅ implémenté (décision actée dans `spec/commands.md` : `-F -e -E -i -v -w -x -n -c -o -l -L -m -q -B/-A/-C` acceptés) ;
 3. Paquet B — filtres de flux (`head`/`tail`/`wc`/`sort`/`uniq`/`cut`/`tr`) ;
 4. Paquet C — `sed` sur flux (règle de position au parse) ;
 5. Paquets D (`json`) et E (`tee`) uniquement si un besoin mesuré les justifie.
