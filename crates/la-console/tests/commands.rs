@@ -498,11 +498,7 @@ fn e2e_grep_refused_flags_are_fail_not_denied() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
     let mut session = Session::spawn(dir.path());
-    for cmd in [
-        "grep -P x a.txt",
-        "grep --include=*.txt x .",
-        "grep -z x a.txt",
-    ] {
+    for cmd in ["grep -P x a.txt", "grep --text x a.txt", "grep -z x a.txt"] {
         let resp = session.send(cmd);
         assert_eq!(resp["ok"], false, "{cmd}");
         assert_eq!(resp["code"], 1, "{cmd}");
@@ -515,6 +511,31 @@ fn e2e_grep_refused_flags_are_fail_not_denied() {
     }
     // path escape is still denied (kind=denied, code 2) even with flags
     let resp = session.send("grep -v x ../../etc/passwd");
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+}
+
+#[test]
+fn e2e_grep_file_patterns_and_exclude_from() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/a.rs"), "alpha\nbeta\n").unwrap();
+    std::fs::write(dir.path().join("src/b.txt"), "alpha\n").unwrap();
+    std::fs::write(dir.path().join("pats.txt"), "alpha\n\nbeta\n").unwrap();
+    std::fs::write(dir.path().join("ex.txt"), "*.txt\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+    let resp = session.send("grep -f pats.txt src");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(
+        resp["stdout"],
+        "src/a.rs:1:alpha\nsrc/a.rs:2:beta\nsrc/b.txt:1:alpha\n"
+    );
+    let resp = session.send("grep -f pats.txt --exclude-from=ex.txt src");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "src/a.rs:1:alpha\nsrc/a.rs:2:beta\n");
+    // -f hors du root = denied
+    let resp = session.send("grep -f ../pats.txt alpha src");
     assert_eq!(resp["ok"], false);
     assert_eq!(resp["code"], 2);
     assert_eq!(resp["kind"], "denied");
