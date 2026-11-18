@@ -25,6 +25,7 @@ sensibles**, même après expansion de glob ou substitution de variable.
 | `wc [-l\|-w\|-c] [path...]` | ✅ | idem |
 | `sort [-r] [path...]` / `uniq [-c] [path...]` | ✅ | idem |
 | `cut -d <sep> -f <n[,m...]> [path...]` / `tr <from> <to> [path...]` | ✅ | idem |
+| `json <selector> [path...]` | ✅ | extracteur JSON minimal (paquet D) : voir « Paquet D » ci-dessous |
 | `http <METHOD> <url> [--data <body>] [--header k:v]` | ✅ | implémentation **Rust maison** (pas de binaire curl), crate `reqwest` + rustls côté console. Allowlist d'hôtes : v1 = `localhost`/`127.0.0.1`/`::1` uniquement, extensible via liste déclarée par l'humain. Blocage des IP de métadonnées cloud (169.254.169.254) et plages privées non déclarées. Timeout court, taille de réponse bornée, redirects revalidés contre l'allowlist. `--data` borné en taille |
 | `&&` | ✅ | chaînage séquentiel, stop au 1er échec. **Les deux côtés doivent être whitelist ou trusted.** Jamais de vrai shell |
 | `;` | ✅ | interprété comme `&&` (plus strict que bash : stop au 1er échec) |
@@ -204,6 +205,39 @@ sensibles + `max_read_bytes`), comme `cat`. Règles communes : UTF-8 strict
   redirections `>`/`>>` restent traitées par le dispatcher via `FileSink`
   (validation avant ouverture, quota, masquage), comme pour toute commande
   whitelist.
+
+## Paquet D de whitelist-expansion (décision actée) : extracteur JSON minimal
+
+Syntaxe : `json <selector> [path...]` — **sans `path`, lit l'entrée** (pipe ou
+redirection `<`) ; avec des chemins (globs autorisés), parse chaque fichier via
+`read_bounded` (`resolve()` + sensibles + `max_read_bytes`) et émet **une ligne
+de sortie par source**.
+
+- **Sélecteur** : un seul mot (quotable), ex. `body.items[0].name` ; `.` ou ``
+  (vide) = document entier. Segments séparés par `.` (clé d'objet) et `[N]`
+  (index de tableau). Parsing strict et fail-closed : segment vide (`a..b`),
+  point terminal (`a.`), index vide/non numérique (`a[]`, `a[x]`, `a[-1]`),
+  `]` dans une clé ou contenu après `]` sans `.` (`a[0]b`) = `fail` avec message
+  explicite. Longueur bornée (4096 octets, `MAX_SELECTOR_BYTES`) et nombre de
+  segments ≤ `Limits::max_json_depth` sinon `fail`.
+- **Parsing JSON** : `serde_json` (fail-closed : JSON invalide, UTF-8 invalide
+  ou profondeur > limite interne du parser = `fail`) ; profondeur du document
+  vérifiée après parse ≤ `Limits::max_json_depth` (128 par défaut,
+  `DEFAULT_MAX_JSON_DEPTH`, = limite de récursion de serde_json) sinon
+  `limit` (code 3). Taille d'entrée déjà bornée en amont (`PipeSink` ≤
+  `max_output_bytes`, `read_bounded` ≤ `max_read_bytes`).
+- **Sémantique d'extraction** (style jq) : clé absente d'un objet → `null` ;
+  index hors bornes d'un tableau → `null` ; indexer `null` → `null` ; indexer
+  un autre type incompatible (ex. `.a` sur un nombre, `[0]` sur un objet) =
+  `fail` (code 1) avec message explicite.
+- **Sortie** : la valeur extraite sérialisée en JSON compact + `\n`
+  (`"first"` pour une chaîne, `3` pour un nombre, `null`, …), via
+  `PipeSink`/`CallerSink` (troncature + masquage des secrets en bout de pipe).
+- **Aucune option** : tout premier argument commençant par `-` (même `-`
+  seul) = `fail` « unsupported option » (fail-closed ; pas de `-r` en v1).
+- Codes de sortie : 0 succès, 1 `fail` (usage, option, sélecteur invalide, JSON
+  invalide, type incompatible, fichier absent — les autres fichiers continuent,
+  message sur stderr), 2 `denied`, 3 `limit`.
 
 ## Commandes trusted
 

@@ -5,6 +5,7 @@ pub mod grep;
 pub mod head;
 pub mod help;
 pub mod http;
+pub mod json;
 pub mod ls;
 pub mod sed;
 pub mod sort;
@@ -31,6 +32,9 @@ pub const DEFAULT_MAX_COMMAND_WRITE_BYTES: u64 = 16 * 1024 * 1024;
 /// Default bound on the number of lines a buffering stream filter (`sort`)
 /// may hold in memory.
 pub const DEFAULT_MAX_STREAM_LINES: usize = 100_000;
+/// Default bound on the nesting depth of a parsed JSON document (`json`).
+/// Matches serde_json's own parser recursion limit.
+pub const DEFAULT_MAX_JSON_DEPTH: usize = 128;
 
 #[derive(Debug, Clone)]
 pub struct Limits {
@@ -44,6 +48,7 @@ pub struct Limits {
     pub max_grep_globs: usize,
     pub max_grep_patterns: usize,
     pub max_stream_lines: usize,
+    pub max_json_depth: usize,
     pub max_http_body_bytes: usize,
     pub max_http_response_bytes: usize,
     pub max_http_redirects: usize,
@@ -65,6 +70,7 @@ impl Default for Limits {
             max_grep_globs: grep::DEFAULT_MAX_GREP_GLOBS,
             max_grep_patterns: grep::DEFAULT_MAX_GREP_PATTERNS,
             max_stream_lines: DEFAULT_MAX_STREAM_LINES,
+            max_json_depth: DEFAULT_MAX_JSON_DEPTH,
             max_http_body_bytes: http::DEFAULT_MAX_HTTP_BODY_BYTES,
             max_http_response_bytes: http::DEFAULT_MAX_HTTP_RESPONSE_BYTES,
             max_http_redirects: http::MAX_REDIRECTS,
@@ -343,6 +349,16 @@ pub static COMMANDS: &[CommandSpec] = &[
         syntaxes: &["http <METHOD> <url> [--data <body>] [--header <k:v>]"],
         summary: "HTTP request, localhost only in v1",
         run: http::run,
+    },
+    CommandSpec {
+        name: "json",
+        syntaxes: &[
+            "json <selector> [path...]",
+            "json <selector> < <path>",
+            "json <selector> [path...] > <path>",
+        ],
+        summary: "extract a JSON field (selector a.b[0].c, '.' = whole document); reads pipe/'<' input when no path; bounded depth, fail-closed parse",
+        run: json::run,
     },
     CommandSpec {
         name: "ls",
@@ -1117,6 +1133,7 @@ mod helper_tests {
         assert!(l.max_grep_globs > 0);
         assert!(l.max_grep_patterns > 0);
         assert!(l.max_stream_lines > 0);
+        assert!(l.max_json_depth > 0);
         assert!(l.max_http_body_bytes > 0);
         assert!(l.max_http_response_bytes > 0);
         assert!(l.max_http_redirects > 0);

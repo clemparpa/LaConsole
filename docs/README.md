@@ -54,7 +54,9 @@ place ; seule la forme `s///` avec le flag `g` est supportée) — et, sans chem
 `http <METHOD> <url> [--data b] [--header k:v]` (v1 : `localhost` uniquement),
 les filtres de flux in-process `head [-n N]`, `tail [-n N]`, `wc [-l|-w|-c]`,
 `sort [-r]`, `uniq [-c]`, `cut -d <sep> -f <n[,m...]>`, `tr <from> <to>` (lisent
-l'entrée pipe/`<` sans chemin, bornés, UTF-8 strict, aucune écriture disque) et
+l'entrée pipe/`<` sans chemin, bornés, UTF-8 strict, aucune écriture disque),
+l'extracteur JSON `json <selector> [path...]` (sélecteur `a.b[0].c`, lit le flux
+pipe/`<` sans chemin, profondeur bornée, parsing fail-closed) et
 `help [commande]` (liste les commandes disponibles et leurs syntaxes) sont
 disponibles. Toute autre commande est refusée (`denied: unknown command`,
 code 2).

@@ -730,3 +730,91 @@ fn e2e_grep_include_exclude_dir_filters() {
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }
+
+#[test]
+fn e2e_json_extractor_on_pipe_and_files() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("data.json"),
+        r#"{"body":{"items":[{"name":"first"},{"name":"second"}],"n":3},"ok":true}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("bad.json"), "{not json").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let cmds = [
+        r#"cat data.json | json body.items[0].name"#,
+        r#"cat data.json | json body | json items[1] | json name"#,
+        "json body.n data.json",
+        "json body.nope data.json",
+        "json . data.json > whole.json",
+        "cat bad.json | json a",
+        "json -r body data.json",
+        "json a ../escape.json",
+    ];
+    for cmd in cmds {
+        writeln!(
+            stdin,
+            r#"{{"op": "exec", "cmd": {}}}"#,
+            serde_json::to_string(cmd).unwrap()
+        )
+        .unwrap();
+    }
+    stdin.flush().unwrap();
+
+    let mut next = || {
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        serde_json::from_str::<serde_json::Value>(&line).unwrap()
+    };
+
+    let resp = next();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "\"first\"\n");
+
+    let resp = next();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "\"second\"\n");
+
+    let resp = next();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "3\n");
+
+    let resp = next();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "null\n");
+
+    let resp = next();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "");
+    let whole = std::fs::read_to_string(dir.path().join("whole.json")).unwrap();
+    assert!(serde_json::from_str::<serde_json::Value>(whole.trim()).is_ok());
+
+    let resp = next();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["kind"], "fail");
+    assert!(resp["stderr"].as_str().unwrap().contains("invalid JSON"));
+
+    let resp = next();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["kind"], "fail");
+    assert!(resp["stderr"]
+        .as_str()
+        .unwrap()
+        .contains("unsupported option"));
+
+    let resp = next();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["kind"], "denied");
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
