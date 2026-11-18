@@ -1,4 +1,6 @@
-use la_console::parse::{all_commands, has_glob, parse_input, pipe_has_trusted, ParseError};
+use la_console::parse::{
+    all_commands, has_glob, parse_input, pipe_has_misplaced_trusted, pipe_has_trusted, ParseError,
+};
 use proptest::prelude::*;
 use std::collections::HashMap;
 
@@ -7,11 +9,20 @@ fn no_vars() -> HashMap<String, String> {
 }
 
 #[test]
-fn pipe_never_contains_trusted() {
+fn trusted_is_allowed_only_as_pipe_head() {
     assert!(matches!(
         parse_input("cat a | trusted x", &no_vars()),
         Err(ParseError::TrustedInPipe)
     ));
+    assert!(matches!(
+        parse_input("cat a | trusted x | cat b", &no_vars()),
+        Err(ParseError::TrustedInPipe)
+    ));
+    assert!(matches!(
+        parse_input("trusted a | trusted b", &no_vars()),
+        Err(ParseError::TrustedInPipe)
+    ));
+    assert!(parse_input("trusted x | cat a", &no_vars()).is_ok());
 }
 
 mod proptests {
@@ -19,9 +30,12 @@ mod proptests {
 
     proptest! {
         #[test]
-        fn never_trusted_in_a_pipe(input in any::<String>()) {
+        fn never_trusted_after_a_pipe_head(input in any::<String>()) {
             if let Ok(node) = parse_input(&input, &no_vars()) {
-                prop_assert!(!pipe_has_trusted(&node), "trusted in pipe for {input:?}");
+                prop_assert!(
+                    !pipe_has_misplaced_trusted(&node),
+                    "trusted after pipe head for {input:?}"
+                );
             }
         }
 

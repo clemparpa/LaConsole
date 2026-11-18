@@ -717,6 +717,52 @@ mod tests {
     }
 
     #[test]
+    fn trusted_as_pipe_head_feeds_whitelist_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "lines = printf 'alpha\\nbeta\\ngamma\\n'\n";
+        let (_trusted_dir, registry) = registry_for(dir.path(), content, Some(sha_of(content)));
+        let ctx = ctx_with(&dir, Some(registry));
+        let out = run_cmd(&ctx, "trusted lines | grep beta").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "(stdin):2:beta\n");
+        let out = run_cmd(&ctx, "trusted lines | grep nomatch | cat").unwrap();
+        assert_eq!(out.code, 1);
+        assert_eq!(out.stdout, "");
+    }
+
+    #[test]
+    fn trusted_pipe_head_output_redirects_through_file_sink() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "lines = printf 'alpha\\nbeta\\ngamma\\n'\n";
+        let (_trusted_dir, registry) = registry_for(dir.path(), content, Some(sha_of(content)));
+        let ctx = ctx_with(&dir, Some(registry));
+        let out = run_cmd(&ctx, "trusted lines | grep beta > out.txt").unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout, "");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("out.txt")).unwrap(),
+            "(stdin):2:beta\n"
+        );
+    }
+
+    #[test]
+    fn pipe_head_trusted_still_verifies_checksum() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "noop = true\n";
+        let file_dir = tempfile::tempdir().unwrap();
+        let file = file_dir.path().join("trusted.txt");
+        fs::write(&file, content).unwrap();
+        let registry =
+            TrustedRegistry::load(&file, Some(sha_of(content)), dir.path(), false).unwrap();
+        let ctx = ctx_with(&dir, Some(registry));
+        let out = run_cmd(&ctx, "trusted noop | cat").unwrap();
+        assert_eq!(out.code, 0);
+        fs::write(&file, "noop = rm -rf /\n").unwrap();
+        let err = run_cmd(&ctx, "trusted noop | cat").unwrap_err();
+        assert!(matches!(err, ExecError::Denied(m) if m.contains("checksum")));
+    }
+
+    #[test]
     fn run_propagates_nonzero_exit_code() {
         let dir = tempfile::tempdir().unwrap();
         let content = "fail = exit 3\n";

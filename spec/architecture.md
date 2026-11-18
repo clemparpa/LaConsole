@@ -52,7 +52,10 @@ Avant qu'une sortie ne quitte la console (ou ne parte dans un pipe) :
 
 - `a && b` : deux nœuds, chacun passe par les 3 niveaux ; stop au 1er échec.
 - `a | b` : la sortie validée (niveau 3, flux brut) de `a` devient l'entrée de
-  `b` ; `b` repasse par les 3 niveaux. Whitelist uniquement, jamais trusted.
+  `b` ; `b` repasse par les 3 niveaux. Whitelist uniquement — sauf `trusted`,
+  autorisé **uniquement en tête de pipe** (`trusted x | b`) : son stdin reste
+  `null` (aucune donnée pipée ne lui est fournie) et seules des commandes
+  whitelist peuvent suivre.
 - `a > f` : `f` est validé par la boucle niveau 2 **avant** l'exécution de `a` ;
   la sortie écrite est aussi bornée.
 

@@ -22,9 +22,10 @@ Deux familles de commandes :
 2. **Commandes autorisées par l'utilisateur**, inscrites dans le repo de l'agent
    (revue humaine en PR, épinglées sha256 comme `trusted.txt`), et **composables
    avec les commandes de base** — ex. `trusted run-tests | grep ERROR` pour lire
-   des logs illisibles. `trusted` existe (v1) avec `;`/`&&` ; **le delta restant
-   est le pipe `trusted → whitelist`** (jamais l'inverse, données pipées bornées
-   via `CallerSink`).
+   des logs illisibles. `trusted` existe (v1) avec `;`/`&&` ; **le pipe
+   `trusted → whitelist` est livré 🚧 (cette PR, tête de pipe uniquement,
+   jamais l'inverse)** : stdin du shell trusted toujours `null`, sortie bornée
+   via `PipeSink` (troncature) puis `CallerSink` en sortie finale.
 
 Au-delà de `trusted` (shell), un **plugin** = binaire épinglé par l'utilisateur,
 déclaré dans `plugins.json`, invoqué avec la **syntaxe standard de l'outil**
@@ -111,8 +112,8 @@ masquage — jamais délégué au harnais, fail-closed même si le harnais ment.
 
 ## Phases proposées
 
-1. Ce document, revu et validé (cette PR) ;
-2. Le delta composabilité : pipe `trusted → whitelist` borné ;
+1. Ce document, revu et validé (PR #29) ;
+2. ✅ (cette PR) Le delta composabilité : pipe `trusted → whitelist` borné (tête de pipe uniquement) ;
 3. `sandbox.rs` (helper arg0, backends Seatbelt/Landlock, fail-closed) puis
    `plugins.rs` (manifeste JSON strict, spawn sandboxé) ; `help` liste les
    plugins déclarés.
