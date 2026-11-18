@@ -338,6 +338,13 @@ fn e2e_help_lists_every_command_with_all_its_syntaxes() {
         "sed -i s/<pat>/<repl>/[g] <path...>",
         "sub <pattern> <replacement> <path...>",
         "http <METHOD> <url>",
+        "head [-n N] [path...]",
+        "tail [-n N] [path...]",
+        "wc [-l|-w|-c] [path...]",
+        "sort [-r] [path...]",
+        "uniq [-c] [path...]",
+        "cut -d <sep> -f <n[,m...]> [path...]",
+        "tr <from> <to> [path...]",
         "trusted <name>",
         "help",
     ] {
@@ -551,4 +558,107 @@ fn e2e_help_grep_lists_flags() {
     assert!(stdout.contains("grep [flags] <pattern> [path...]"));
     assert!(stdout.contains("-i -v -w -x -F -c -o -l -L -q -m N -B/-A/-C N"));
     assert!(stdout.contains("--all"));
+}
+
+#[test]
+fn e2e_stream_filters_full_pipeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let content: String = (1..=20).map(|i| format!("row{i:02}:val{i}\n")).collect();
+    std::fs::write(dir.path().join("data.csv"), content).unwrap();
+    std::fs::write(dir.path().join("log.txt"), "ERR\nOK\nERR\nERR\nOK\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+
+    let resp = session.send("cat data.csv | head -n 2");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "row01:val1\nrow02:val2\n");
+
+    let resp = session.send("cat data.csv | tail -n 2");
+    assert_eq!(resp["stdout"], "row19:val19\nrow20:val20\n");
+
+    let resp = session.send("cat data.csv | wc -l");
+    assert_eq!(resp["stdout"], "20\n");
+
+    let resp = session.send("cat data.csv | sort -r | head -n 1");
+    assert_eq!(resp["stdout"], "row20:val20\n");
+
+    let resp = session.send("cat log.txt | sort | uniq -c");
+    assert_eq!(resp["stdout"], "3 ERR\n2 OK\n");
+
+    let resp = session.send("cat data.csv | cut -d: -f 1 | head -n 1");
+    assert_eq!(resp["stdout"], "row01\n");
+
+    let resp = session.send("cat data.csv | tr a-z A-Z | head -n 1");
+    assert_eq!(resp["stdout"], "ROW01:VAL1\n");
+
+    let resp = session.send("head -n 1 < data.csv");
+    assert_eq!(resp["stdout"], "row01:val1\n");
+
+    let resp = session.send("cat log.txt | tail -n 1 > last.txt");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    let resp = session.send("cat last.txt");
+    assert_eq!(resp["stdout"], "OK\n");
+}
+
+#[test]
+fn e2e_stream_filters_unknown_option_is_fail() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let mut session = Session::spawn(dir.path());
+    for cmd in [
+        "sort -q a.txt",
+        "head -q a.txt",
+        "wc -z a.txt",
+        "uniq -d a.txt",
+        "cut -s -d: -f1 a.txt",
+        "tr -d a b a.txt",
+        "tail --nope a.txt",
+    ] {
+        let resp = session.send(cmd);
+        assert_eq!(resp["ok"], false, "cmd {cmd}");
+        assert_eq!(resp["code"], 1, "cmd {cmd}");
+        assert_eq!(resp["kind"], "fail", "cmd {cmd}");
+    }
+}
+
+#[test]
+fn e2e_stream_filters_deny_escape() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::spawn(dir.path());
+    for cmd in [
+        "head ../secret.txt",
+        "tail -n 1 /etc/passwd",
+        "sort ../x",
+        "wc -l ../../etc/passwd",
+        "uniq ../x",
+        "cut -d: -f1 ../x",
+        "tr a b ../x",
+    ] {
+        let resp = session.send(cmd);
+        assert_eq!(resp["ok"], false, "cmd {cmd}");
+        assert_eq!(resp["code"], 2, "cmd {cmd}");
+        assert_eq!(resp["kind"], "denied", "cmd {cmd}");
+    }
+}
+
+#[test]
+fn e2e_stream_filters_invalid_utf8_is_fail() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("bin.dat"), vec![0xff, 0xfe, b'\n']).unwrap();
+    let mut session = Session::spawn(dir.path());
+    for cmd in [
+        "sort bin.dat",
+        "head bin.dat",
+        "wc bin.dat",
+        "tr a b bin.dat",
+    ] {
+        let resp = session.send(cmd);
+        assert_eq!(resp["ok"], false, "cmd {cmd}");
+        assert_eq!(resp["code"], 1, "cmd {cmd}");
+        assert_eq!(resp["kind"], "fail", "cmd {cmd}");
+        assert!(
+            resp["stderr"].as_str().unwrap().contains("UTF-8"),
+            "cmd {cmd}"
+        );
+    }
 }

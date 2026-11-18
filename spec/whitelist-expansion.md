@@ -126,6 +126,6 @@ composables en tête de pipe (PR #30).
 2. Paquet A — flags `grep` ✅ implémenté (décision actée dans `spec/commands.md` : `-F -e -E -i -v -w -x -n -c -o -l -L -m -q -B/-A/-C` acceptés) ;
 2b. Paquet A2 — `--include`/`--exclude`/`--exclude-dir` ✅ implémenté (branche `vibe/grep-globs-a2-3cc883`, décision dans `spec/commands.md` : sémantique gitignore via `ignore::overrides` + `filter_entry` appliqué après `hidden`/`.gitignore` — les filtres ne peuvent jamais désactiver la protection de base ; bornés : 64 globs max, 256 octets/glob, glob invalide = `fail` ; récursif uniquement) ;
 2c. Paquet A3 — `-f`/`--file` (patterns) et `--exclude-from` (globs) ✅ implémenté (même branche, décision dans `spec/commands.md`) : lecture via `read_bounded` (resolve + sensibles + `max_read_bytes`), UTF-8 strict, lignes vides ignorées, `max_grep_patterns` = 10 000, 4096 o/ligne, globs du fichier comptés dans `max_grep_globs`) ;
-3. Paquet B — filtres de flux (`head`/`tail`/`wc`/`sort`/`uniq`/`cut`/`tr`) ;
+3. Paquet B — filtres de flux (`head`/`tail`/`wc`/`sort`/`uniq`/`cut`/`tr`) ✅ implémenté (branche `vibe/stream-filters-b-c4cd4a`, décision actée dans `spec/commands.md` « Filtres de flux » : `Limits::max_stream_lines` = 100 000, `head`/`tail` N ≤ min(10 000, `max_stream_lines`), `cut` ≤ 256 champs, `tr` sets ≤ 1024 chars) ;
 4. Paquet C — `sed` sur flux (règle de position au parse) ;
 5. Paquets D (`json`) et E (`tee`) uniquement si un besoin mesuré les justifie.

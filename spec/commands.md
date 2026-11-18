@@ -21,6 +21,10 @@ sensibles**, même après expansion de glob ou substitution de variable.
 | `grep [flags] <pattern> [path...]` | ✅ | via crate `grep`, fichiers bornés ; respecte `.gitignore` par défaut, `--all` pour tout chercher — chaque fichier matché passe quand même par `resolve()` + bornes ; flags : voir « Commande `grep` — flags » ci-dessous |
 | `sub <pattern> <repl> <path>` (sed-like) | ✅ | substitution via `regex` uniquement, fichiers bornés |
 | `sed [-i] s/<pat>/<repl>/[g] <path...>` | ✅ | alias sed **restreint** : voir ci-dessous |
+| `head [-n N] [path...]` / `tail [-n N] [path...]` | ✅ | filtres de flux (paquet B) : voir « Filtres de flux » ci-dessous |
+| `wc [-l\|-w\|-c] [path...]` | ✅ | idem |
+| `sort [-r] [path...]` / `uniq [-c] [path...]` | ✅ | idem |
+| `cut -d <sep> -f <n[,m...]> [path...]` / `tr <from> <to> [path...]` | ✅ | idem |
 | `http <METHOD> <url> [--data <body>] [--header k:v]` | ✅ | implémentation **Rust maison** (pas de binaire curl), crate `reqwest` + rustls côté console. Allowlist d'hôtes : v1 = `localhost`/`127.0.0.1`/`::1` uniquement, extensible via liste déclarée par l'humain. Blocage des IP de métadonnées cloud (169.254.169.254) et plages privées non déclarées. Timeout court, taille de réponse bornée, redirects revalidés contre l'allowlist. `--data` borné en taille |
 | `&&` | ✅ | chaînage séquentiel, stop au 1er échec. **Les deux côtés doivent être whitelist ou trusted.** Jamais de vrai shell |
 | `;` | ✅ | interprété comme `&&` (plus strict que bash : stop au 1er échec) |
@@ -145,6 +149,35 @@ Détails d'implémentation :
 - Code de sortie : 0 si au moins une ligne est sélectionnée (tous fichiers confondus),
   1 sinon. `-v` inverse la sélection avant tout mode de sortie ; `-v -o` produit donc un
   stdout vide mais code 0 si des lignes sont sélectionnées.
+
+## Filtres de flux (paquet B de whitelist-expansion : décision actée)
+
+Syntaxe commune : `<filtre> [flags] [path...]` — **sans `path`, le filtre lit
+l'entrée** (pipe ou redirection `<`) ; avec des chemins (globs autorisés), il
+lit la **concaténation** des fichiers via `read_bounded` (`resolve()` +
+sensibles + `max_read_bytes`), comme `cat`. Règles communes : UTF-8 strict
+(invalide = `fail`), toute option inconnue = `fail` (fail-closed), aucune
+écriture disque, aucune exécution de code (in-process), sortie bornée via
+`PipeSink`/`CallerSink` (troncature + masquage des secrets en bout de pipe).
+
+| Commande | Sémantique | Bornes |
+|---|---|---|
+| `head [-n N]` (`-nN`, `--lines[=N]`) | N premières lignes (défaut 10) | N ≤ min(10 000, `max_stream_lines`) sinon `fail` ; streaming |
+| `tail [-n N]` (idem) | N dernières lignes (défaut 10) | idem ; buffer circulaire de N lignes |
+| `wc [-l\|-w\|-c]` (+ `--lines`/`--words`/`--bytes`/`--chars`) | compte les lignes (octets `\n`), les mots, les octets ; les 3 par défaut, sur une seule ligne séparée par des espaces | streaming |
+| `sort [-r]` (`--reverse`) | tri lexicographique UTF-8, `-r` renverse ; chaque ligne de sortie est terminée par `\n` (comme GNU sort) | seules lignes bufferisées : ≤ `Limits::max_stream_lines` (100 000 par défaut, sinon `limit` code 3) |
+| `uniq [-c]` (`--count`) | supprime les doublons **adjacents** ; `-c` préfixe le compte du run | streaming (une seule ligne retenue en mémoire) |
+| `cut -d <sep> -f <n[,m...]>` (`--delimiter=`/`--fields=`) | champs 1-based ; `sep` = exactement 1 caractère (pas `\n`) ; ligne sans `sep` = affichée entière ; champ absent = vide | liste `-f` ≤ 256 champs sinon `fail` |
+| `tr <from> <to>` | traduction de caractères ; plages simples `a-z`, échappements `\n \t \r \\` | sets expansés ≤ 1024 chars sinon `fail` ; `from` plus long que `to` → padding avec le dernier char de `to` (GNU) |
+
+- `--` termine les options partout. Codes de sortie : 0 succès, 1 = `fail`
+  (usage, option inconnue, fichier absent, UTF-8 invalide — message sur
+  stderr), 2 = `denied` (chemin hors du root, fichier sensible), 3 = `limit`
+  (borne dépassée, ex. `sort` au-delà de `max_stream_lines`).
+- Les filtres ne lisent jamais hors du root et ne peuvent pas écrire : les
+  redirections `>`/`>>` restent traitées par le dispatcher via `FileSink`
+  (validation avant ouverture, quota, masquage), comme pour toute commande
+  whitelist.
 
 ## Commandes trusted
 

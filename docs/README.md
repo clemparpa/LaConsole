@@ -49,7 +49,10 @@ Whitelist v1 (voir [ROADMAP.md](../ROADMAP.md)) :
 `sed [-i] s/<pat>/<repl>/[g] <path...>` (alias sed restreint : sans `-i` affiche
 le résultat sur stdout pour prévisualiser, avec `-i` réécrit les fichiers en
 place ; seule la forme `s///` avec le flag `g` est supportée),
-`http <METHOD> <url> [--data b] [--header k:v]` (v1 : `localhost` uniquement) et
+`http <METHOD> <url> [--data b] [--header k:v]` (v1 : `localhost` uniquement),
+les filtres de flux in-process `head [-n N]`, `tail [-n N]`, `wc [-l|-w|-c]`,
+`sort [-r]`, `uniq [-c]`, `cut -d <sep> -f <n[,m...]>`, `tr <from> <to>` (lisent
+l'entrée pipe/`<` sans chemin, bornés, UTF-8 strict, aucune écriture disque) et
 `help [commande]` (liste les commandes disponibles et leurs syntaxes) sont
 disponibles. Toute autre commande est refusée (`denied: unknown command`,
 code 2).
