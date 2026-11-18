@@ -311,12 +311,14 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "grep",
         syntaxes: &[
             "grep <pattern> <path...>",
+            "grep [flags] <pattern> [path...]",
+            "grep -e <pattern>... [path...]",
             "grep <pattern> <path...> --all",
-            "grep <pattern> < <path>",
-            "grep <pattern> <path...> > <path>",
-            "grep <pattern> <path...> >> <path>",
+            "grep [flags] <pattern> < <path>",
+            "grep [flags] <pattern> [path...] > <path>",
+            "grep [flags] <pattern> [path...] >> <path>",
         ],
-        summary: "search files (.gitignore respected unless --all)",
+        summary: "search files, ERE dialect; flags: -i -v -w -x -F -c -o -l -L -q -m N -B/-A/-C N (-n always on, -a = --all); .gitignore respected unless --all",
         run: grep::run,
     },
     CommandSpec {
