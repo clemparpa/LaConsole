@@ -504,7 +504,8 @@ fn run_with_timeout(
     ctx: &Ctx,
     quota: Arc<DiskQuota>,
 ) -> Result<RawOutput, ExecError> {
-    let timeout = Duration::from_secs(ctx.limits.command_timeout_secs);
+    let timeout_secs = crate::trusted::command_timeout_secs(cmd, ctx);
+    let timeout = Duration::from_secs(timeout_secs);
     let (tx, rx) = std::sync::mpsc::channel();
     let owned = ctx.clone();
     let cmd = cmd.clone();
@@ -515,8 +516,7 @@ fn run_with_timeout(
     match rx.recv_timeout(timeout) {
         Ok(result) => result,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(ExecError::Limit(format!(
-            "command timed out after {}s",
-            ctx.limits.command_timeout_secs
+            "command timed out after {timeout_secs}s"
         ))),
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
             Err(ExecError::Fail("command worker panicked".to_string()))

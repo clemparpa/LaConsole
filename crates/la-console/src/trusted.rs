@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::commands::{check_read_path, Ctx, ExecError, RawOutput};
@@ -14,8 +15,6 @@ use crate::sink::DiskQuota;
 pub const TRUSTED_NO_PATH_CHECK_FLAG: &str = "--no-path-check";
 const SHELL: &str = "/bin/sh";
 const DEFAULT_PATH_ENV: &str = "/usr/local/bin:/usr/bin:/bin";
-const MEM_LIMIT_BYTES: u64 = 1024 * 1024 * 1024;
-const CPU_GRACE_SECS: u64 = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrustedError {
@@ -33,6 +32,32 @@ pub enum TrustedError {
     UnknownName(String),
     #[error("home directory for trusted commands would be inside the root")]
     HomeInsideRoot,
+    #[error("unsupported trusted file extension '{0}' (expected .toml or .txt)")]
+    UnsupportedFormat(String),
+    #[error("invalid TOML manifest: {0}")]
+    InvalidToml(String),
+    #[error("invalid trusted entry '{name}': {reason}")]
+    InvalidEntry { name: String, reason: String },
+}
+
+/// Network policy of a trusted entry. Enforced by the OS sandbox backend
+/// (seatbelt / landlock / WSL2) once one is available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkMode {
+    None,
+    Loopback,
+    Proxy,
+}
+
+impl std::fmt::Display for NetworkMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NetworkMode::None => write!(f, "none"),
+            NetworkMode::Loopback => write!(f, "loopback"),
+            NetworkMode::Proxy => write!(f, "proxy"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +65,52 @@ pub struct TrustedEntry {
     pub name: String,
     pub command: String,
     pub no_path_check: bool,
+    /// Per-entry wall-clock timeout, enforced by the console itself (kill of
+    /// the child process group). `None` falls back to the global
+    /// `--timeout-secs`.
+    pub timeout_secs: Option<u64>,
+    /// Limits that only an OS sandbox backend can enforce (disk write quota,
+    /// memory, cpus, network policy). Declaring any of them without an
+    /// available backend is refused at execution time (fail-closed).
+    pub max_write_bytes: Option<u64>,
+    pub mem_bytes: Option<u64>,
+    pub cpus: Option<u64>,
+    pub network: Option<NetworkMode>,
+}
+
+impl TrustedEntry {
+    fn v1(name: &str, command: &str, no_path_check: bool) -> Self {
+        Self {
+            name: name.to_string(),
+            command: command.to_string(),
+            no_path_check,
+            timeout_secs: None,
+            max_write_bytes: None,
+            mem_bytes: None,
+            cpus: None,
+            network: None,
+        }
+    }
+
+    /// First declared limit that requires an OS backend to be enforced.
+    pub fn backend_limit(&self) -> Option<&'static str> {
+        if self.max_write_bytes.is_some() {
+            Some("max_write_bytes")
+        } else if self.mem_bytes.is_some() {
+            Some("mem_bytes")
+        } else if self.cpus.is_some() {
+            Some("cpus")
+        } else if self.network.is_some() {
+            Some("network")
+        } else {
+            None
+        }
+    }
+
+    /// Effective wall-clock timeout for this entry (console-enforced).
+    pub fn effective_timeout_secs(&self, ctx: &Ctx) -> u64 {
+        self.timeout_secs.unwrap_or(ctx.limits.command_timeout_secs)
+    }
 }
 
 #[derive(Clone)]
@@ -58,7 +129,15 @@ impl TrustedRegistry {
         sandboxed: bool,
     ) -> Result<Self, TrustedError> {
         let content = std::fs::read_to_string(path)?;
-        let entries = parse_entries(&content)?;
+        let entries = match path.extension().and_then(|ext| ext.to_str()) {
+            Some("toml") => parse_toml_entries(&content)?,
+            Some("txt") => parse_entries(&content)?,
+            other => {
+                return Err(TrustedError::UnsupportedFormat(
+                    other.unwrap_or("<none>").to_string(),
+                ));
+            }
+        };
         let home = make_home(root, sandboxed)?;
         Ok(Self {
             path: path.to_path_buf(),
@@ -166,11 +245,7 @@ fn parse_entries(content: &str) -> Result<HashMap<String, TrustedEntry>, Trusted
         if entries
             .insert(
                 name.to_string(),
-                TrustedEntry {
-                    name: name.to_string(),
-                    command: command.to_string(),
-                    no_path_check,
-                },
+                TrustedEntry::v1(name, command, no_path_check),
             )
             .is_some()
         {
@@ -178,6 +253,84 @@ fn parse_entries(content: &str) -> Result<HashMap<String, TrustedEntry>, Trusted
         }
     }
     Ok(entries)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TomlManifest {
+    commands: BTreeMap<String, TomlCommand>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TomlCommand {
+    command: String,
+    no_path_check: Option<bool>,
+    timeout_secs: Option<u64>,
+    max_write_bytes: Option<u64>,
+    mem_bytes: Option<u64>,
+    cpus: Option<u64>,
+    network: Option<NetworkMode>,
+}
+
+fn parse_toml_entries(content: &str) -> Result<HashMap<String, TrustedEntry>, TrustedError> {
+    let manifest: TomlManifest =
+        toml::from_str(content).map_err(|err| TrustedError::InvalidToml(err.to_string()))?;
+    let mut entries = HashMap::new();
+    for (name, cmd) in manifest.commands {
+        if !is_valid_name(&name) {
+            return Err(TrustedError::InvalidEntry {
+                name,
+                reason: "invalid name (expected ^[A-Za-z_][A-Za-z0-9_-]*$)".to_string(),
+            });
+        }
+        let command = cmd.command.trim().to_string();
+        if command.is_empty() {
+            return Err(TrustedError::InvalidEntry {
+                name: name.clone(),
+                reason: "empty command".to_string(),
+            });
+        }
+        if cmd.timeout_secs == Some(0) {
+            return Err(TrustedError::InvalidEntry {
+                name: name.clone(),
+                reason: "timeout_secs must be >= 1".to_string(),
+            });
+        }
+        if cmd.cpus == Some(0) {
+            return Err(TrustedError::InvalidEntry {
+                name: name.clone(),
+                reason: "cpus must be >= 1".to_string(),
+            });
+        }
+        entries.insert(
+            name.clone(),
+            TrustedEntry {
+                name,
+                command,
+                no_path_check: cmd.no_path_check.unwrap_or(false),
+                timeout_secs: cmd.timeout_secs,
+                max_write_bytes: cmd.max_write_bytes,
+                mem_bytes: cmd.mem_bytes,
+                cpus: cmd.cpus,
+                network: cmd.network,
+            },
+        );
+    }
+    Ok(entries)
+}
+
+/// Effective wall-clock timeout for a parsed command: a `trusted` entry may
+/// declare its own `timeout_secs`; every other command uses the global limit.
+pub fn command_timeout_secs(cmd: &SimpleCommand, ctx: &Ctx) -> u64 {
+    if cmd.argv.first().is_some_and(|arg| arg.text == "trusted") {
+        if let (Some(registry), Some(name)) = (ctx.trusted.as_ref(), cmd.argv.get(1)) {
+            if let Ok(entry) = registry.get(&name.text) {
+                return entry.effective_timeout_secs(ctx);
+            }
+        }
+    }
+    ctx.limits.command_timeout_secs
 }
 
 /// HOME for trusted shells must live outside the root so a trusted command
@@ -246,6 +399,12 @@ pub(crate) fn run(
         ));
     }
     let entry = registry.get(&name_arg.text).map_err(trusted_to_exec)?;
+    if let Some(field) = entry.backend_limit() {
+        return Err(ExecError::Denied(format!(
+            "trusted entry '{}' declares '{field}' but no OS sandbox backend is available to enforce it yet (fail-closed)",
+            entry.name
+        )));
+    }
     let args = &cmd.argv[2..];
     if !entry.no_path_check {
         for arg in args {
@@ -270,18 +429,7 @@ fn exec_trusted(
     home: &Path,
     cage_shell: Option<&str>,
 ) -> Result<RawOutput, ExecError> {
-    // rlimits are applied by the shell itself (ulimit), so they constrain only
-    // the trusted sub-process and its children — never this console process.
-    // `ulimit -f` is in 512-byte blocks (POSIX), the most conservative unit.
-    // `ulimit -v` (RLIMIT_AS) does not exist on macOS/BSD: best-effort (`;` +
-    // stderr silenced); `-t` and `-f` stay fail-closed (`&&`).
-    let mem_kib = MEM_LIMIT_BYTES / 1024;
-    let cpu_secs = ctx
-        .limits
-        .command_timeout_secs
-        .saturating_add(CPU_GRACE_SECS);
-    let fsize_blocks = ctx.limits.max_command_write_bytes / 512;
-    let script = build_script(&entry.command, mem_kib, cpu_secs, fsize_blocks);
+    let script = build_script(&entry.command);
     // User mode: the host /bin/sh. Server mode: the staged busybox, invoked as
     // `<busybox> sh -c ...` so the applet interface is explicit.
     let mut command = match cage_shell {
@@ -296,6 +444,11 @@ fn exec_trusted(
             c
         }
     };
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     command
         .arg(&script)
         .arg(format!("trusted-{}", entry.name))
@@ -320,16 +473,19 @@ fn exec_trusted(
     } else {
         command.env("PATH", DEFAULT_PATH_ENV);
     }
-    run_child(command, ctx.limits.command_timeout_secs)
+    let timeout_secs = entry.effective_timeout_secs(ctx);
+    run_child(command, cage_shell, timeout_secs)
 }
 
-fn build_script(command: &str, mem_kib: u64, cpu_secs: u64, fsize_blocks: u64) -> String {
-    format!(
-        "ulimit -v {mem_kib} 2>/dev/null; ulimit -t {cpu_secs} && ulimit -f {fsize_blocks} && {command} \"$@\""
-    )
+fn build_script(command: &str) -> String {
+    format!("{command} \"$@\"")
 }
 
-fn run_child(mut command: Command, timeout_secs: u64) -> Result<RawOutput, ExecError> {
+fn run_child(
+    mut command: Command,
+    cage_shell: Option<&str>,
+    timeout_secs: u64,
+) -> Result<RawOutput, ExecError> {
     let mut child = command
         .spawn()
         .map_err(|e| ExecError::Fail(format!("trusted: cannot spawn shell: {e}")))?;
@@ -348,7 +504,7 @@ fn run_child(mut command: Command, timeout_secs: u64) -> Result<RawOutput, ExecE
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    let _ = child.kill();
+                    kill_process_group(&mut child, cage_shell);
                     let _ = child.wait();
                     return Err(ExecError::Limit(format!(
                         "command timed out after {timeout_secs}s"
@@ -357,7 +513,7 @@ fn run_child(mut command: Command, timeout_secs: u64) -> Result<RawOutput, ExecE
                 std::thread::sleep(Duration::from_millis(20));
             }
             Err(err) => {
-                let _ = child.kill();
+                kill_process_group(&mut child, cage_shell);
                 return Err(ExecError::Fail(format!("trusted: wait failed: {err}")));
             }
         }
@@ -368,6 +524,38 @@ fn run_child(mut command: Command, timeout_secs: u64) -> Result<RawOutput, ExecE
         stdout,
         stderr,
     })
+}
+
+/// Kills the child and, on Unix, its whole process group (the child was
+/// spawned with `process_group(0)`, so pgid == child pid). Best-effort via
+/// the same shell used to spawn it; the direct `kill()` always runs.
+fn kill_process_group(child: &mut Child, cage_shell: Option<&str>) {
+    let _ = child.kill();
+    #[cfg(unix)]
+    kill_group_unix(child, cage_shell);
+}
+
+#[cfg(unix)]
+fn kill_group_unix(child: &Child, cage_shell: Option<&str>) {
+    let pgid = i64::from(child.id());
+    let result = match cage_shell {
+        Some(busybox) => Command::new(busybox)
+            .arg("kill")
+            .arg("-KILL")
+            .arg(format!("-{pgid}"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status(),
+        None => Command::new(SHELL)
+            .arg("-c")
+            .arg(format!("kill -KILL -{pgid} 2>/dev/null || true"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status(),
+    };
+    let _ = result;
 }
 
 fn exit_code(status: &std::process::ExitStatus) -> u16 {
@@ -394,6 +582,18 @@ mod tests {
         expected: Option<String>,
     ) -> (tempfile::TempDir, TrustedRegistry) {
         registry_for_sandboxed(root, content, expected, false)
+    }
+
+    fn registry_toml_for(
+        root: &Path,
+        content: &str,
+        expected: Option<String>,
+    ) -> (tempfile::TempDir, TrustedRegistry) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("trusted.toml");
+        fs::write(&file, content).unwrap();
+        let registry = TrustedRegistry::load(&file, expected, root, false).unwrap();
+        (dir, registry)
     }
 
     fn registry_for_sandboxed(
@@ -707,13 +907,206 @@ mod tests {
     }
 
     #[test]
-    fn script_keeps_going_when_address_space_limit_is_unsupported() {
-        // Regression guard for macOS/BSD, where `ulimit -v` (RLIMIT_AS) does
-        // not exist: it must be best-effort (`;`) while -t/-f stay fail-closed.
-        let script = build_script("echo hi", 1048576, 35, 32768);
-        let v_part = script.split("; ").next().unwrap();
-        assert!(v_part.starts_with("ulimit -v 1048576 2>/dev/null"));
-        assert!(script.contains("ulimit -t 35 && ulimit -f 32768 && echo hi \"$@\""));
+    fn script_has_no_ulimit_and_appends_args_verbatim() {
+        let script = build_script("cargo test -- --nocapture");
+        assert_eq!(script, "cargo test -- --nocapture \"$@\"");
+        assert!(!script.contains("ulimit"));
+    }
+
+    #[test]
+    fn parses_toml_manifest_with_all_fields() {
+        let entries = parse_toml_entries(
+            "[commands.build]\ncommand = \"cargo build --release\"\n\n\
+             [commands.test-e2e]\ncommand = \"npm run test:e2e\"\nno_path_check = true\n\
+             timeout_secs = 600\nmax_write_bytes = 268435456\nmem_bytes = 4294967296\n\
+             cpus = 2\nnetwork = \"loopback\"\n",
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 2);
+        let build = &entries["build"];
+        assert_eq!(build.command, "cargo build --release");
+        assert!(!build.no_path_check);
+        assert_eq!(build.timeout_secs, None);
+        assert_eq!(build.backend_limit(), None);
+        let test = &entries["test-e2e"];
+        assert!(test.no_path_check);
+        assert_eq!(test.timeout_secs, Some(600));
+        assert_eq!(test.max_write_bytes, Some(268435456));
+        assert_eq!(test.mem_bytes, Some(4294967296));
+        assert_eq!(test.cpus, Some(2));
+        assert_eq!(test.network, Some(NetworkMode::Loopback));
+        assert_eq!(test.backend_limit(), Some("max_write_bytes"));
+    }
+
+    #[test]
+    fn toml_rejects_unknown_fields_missing_command_bad_names_and_bad_values() {
+        assert!(matches!(
+            parse_toml_entries("[commands.build]\ncommand = \"true\"\nsurprise = 1\n"),
+            Err(TrustedError::InvalidToml(_))
+        ));
+        assert!(matches!(
+            parse_toml_entries("[commands.build]\ntimeout_secs = 5\n"),
+            Err(TrustedError::InvalidToml(_))
+        ));
+        assert!(matches!(
+            parse_toml_entries("[commands.\"1bad\"]\ncommand = \"true\"\n"),
+            Err(TrustedError::InvalidEntry { .. })
+        ));
+        assert!(matches!(
+            parse_toml_entries("[commands.build]\ncommand = \"  \"\n"),
+            Err(TrustedError::InvalidEntry { .. })
+        ));
+        assert!(matches!(
+            parse_toml_entries("[commands.build]\ncommand = \"true\"\ntimeout_secs = 0\n"),
+            Err(TrustedError::InvalidEntry { .. })
+        ));
+        assert!(matches!(
+            parse_toml_entries("[commands.build]\ncommand = \"true\"\ncpus = 0\n"),
+            Err(TrustedError::InvalidEntry { .. })
+        ));
+        assert!(matches!(
+            parse_toml_entries("[commands.build]\ncommand = \"true\"\nnetwork = \"everywhere\"\n"),
+            Err(TrustedError::InvalidToml(_))
+        ));
+        assert!(matches!(
+            parse_toml_entries(
+                "[commands.build]\ncommand = \"a\"\n[commands.build]\ncommand = \"b\"\n"
+            ),
+            Err(TrustedError::InvalidToml(_))
+        ));
+    }
+
+    #[test]
+    fn load_detects_format_by_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml_file = dir.path().join("trusted.toml");
+        fs::write(&toml_file, "[commands.build]\ncommand = \"true\"\n").unwrap();
+        let registry = TrustedRegistry::load(&toml_file, None, dir.path(), false).unwrap();
+        assert!(registry.get("build").is_ok());
+
+        let txt_file = dir.path().join("trusted.txt");
+        fs::write(&txt_file, "build = true\n").unwrap();
+        let registry = TrustedRegistry::load(&txt_file, None, dir.path(), false).unwrap();
+        let entry = registry.get("build").unwrap();
+        assert_eq!(entry.timeout_secs, None);
+        assert_eq!(entry.network, None);
+        assert_eq!(entry.backend_limit(), None);
+
+        let json_file = dir.path().join("trusted.json");
+        fs::write(&json_file, "{}").unwrap();
+        assert!(matches!(
+            TrustedRegistry::load(&json_file, None, dir.path(), false),
+            Err(TrustedError::UnsupportedFormat(_))
+        ));
+        let no_ext = dir.path().join("trusted");
+        fs::write(&no_ext, "build = true\n").unwrap();
+        assert!(matches!(
+            TrustedRegistry::load(&no_ext, None, dir.path(), false),
+            Err(TrustedError::UnsupportedFormat(_))
+        ));
+    }
+
+    #[test]
+    fn toml_entry_with_backend_limit_is_denied_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_dir = tempfile::tempdir().unwrap();
+        let file = file_dir.path().join("trusted.toml");
+        let content = "[commands.build]\ncommand = \"true\"\nmem_bytes = 1073741824\n";
+        fs::write(&file, content).unwrap();
+        let registry =
+            TrustedRegistry::load(&file, Some(sha_of(content)), dir.path(), false).unwrap();
+        let ctx = ctx_with(&dir, Some(registry));
+        let err = run_cmd(&ctx, "trusted build").unwrap_err();
+        assert!(
+            matches!(err, ExecError::Denied(ref m) if m.contains("mem_bytes") && m.contains("fail-closed")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn entry_timeout_secs_overrides_global_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_dir = tempfile::tempdir().unwrap();
+        let file = file_dir.path().join("trusted.toml");
+        let content = "[commands.slow]\ncommand = \"sleep 30\"\ntimeout_secs = 1\n";
+        fs::write(&file, content).unwrap();
+        let registry =
+            TrustedRegistry::load(&file, Some(sha_of(content)), dir.path(), false).unwrap();
+        let ctx = ctx_with(&dir, Some(registry));
+        let start = Instant::now();
+        let err = run_cmd(&ctx, "trusted slow").unwrap_err();
+        assert!(matches!(err, ExecError::Limit(m) if m.contains("timed out after 1s")));
+        assert!(start.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn command_timeout_secs_uses_entry_for_trusted_and_global_otherwise() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "[commands.quick]\ncommand = \"true\"\ntimeout_secs = 600\n";
+        let (_trusted_dir, registry) =
+            registry_toml_for(dir.path(), content, Some(sha_of(content)));
+        let mut ctx = ctx_with(&dir, Some(registry));
+        ctx.limits.command_timeout_secs = 30;
+        let node = parse_input("trusted quick", &HashMap::new()).unwrap();
+        let crate::parse::Node::Simple(cmd) = node else {
+            panic!("expected simple");
+        };
+        assert_eq!(command_timeout_secs(&cmd, &ctx), 600);
+        let node = parse_input("cat a.txt", &HashMap::new()).unwrap();
+        let crate::parse::Node::Simple(cmd) = node else {
+            panic!("expected simple");
+        };
+        assert_eq!(command_timeout_secs(&cmd, &ctx), 30);
+    }
+
+    #[test]
+    fn toml_checksum_is_verified_before_every_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_dir = tempfile::tempdir().unwrap();
+        let file = file_dir.path().join("trusted.toml");
+        let content = "[commands.noop]\ncommand = \"true\"\n";
+        fs::write(&file, content).unwrap();
+        let registry =
+            TrustedRegistry::load(&file, Some(sha_of(content)), dir.path(), false).unwrap();
+        assert!(registry.verify().is_ok());
+        let ctx = ctx_with(&dir, Some(registry));
+        let out = run_cmd(&ctx, "trusted noop").unwrap();
+        assert_eq!(out.code, 0);
+        fs::write(&file, "[commands.noop]\ncommand = \"rm -rf /\"\n").unwrap();
+        let err = run_cmd(&ctx, "trusted noop").unwrap_err();
+        assert!(matches!(err, ExecError::Denied(m) if m.contains("checksum")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_kills_the_whole_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "[commands.spawn]\ncommand = \"sleep 47 & wait\"\ntimeout_secs = 1\n";
+        let (_trusted_dir, registry) =
+            registry_toml_for(dir.path(), content, Some(sha_of(content)));
+        let mut ctx = ctx_with(&dir, Some(registry));
+        ctx.limits.command_timeout_secs = 30;
+        let start = Instant::now();
+        let err = run_cmd(&ctx, "trusted spawn").unwrap_err();
+        assert!(matches!(err, ExecError::Limit(_)));
+        assert!(start.elapsed() < Duration::from_secs(10));
+        let mut orphan = String::new();
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(100));
+            let ps = std::process::Command::new("sh")
+                .arg("-c")
+                .arg("ps -eo args | grep '[s]leep 47' || true")
+                .output()
+                .unwrap();
+            orphan = String::from_utf8_lossy(&ps.stdout).trim().to_string();
+            if orphan.is_empty() {
+                break;
+            }
+        }
+        assert!(
+            orphan.is_empty(),
+            "orphaned sleep survived the group kill: {orphan}"
+        );
     }
 
     #[test]

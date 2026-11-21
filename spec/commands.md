@@ -295,16 +295,19 @@ possible : elle s'applique à la sortie passée à l'identique, via `FileSink`.
   2. **scan des changements** depuis la dernière exécution validée (diff du
      fichier + du code de test associé) pour détecter du code adversarial ;
   3. exécution uniquement si checksum attendu == checksum constaté et scan OK.
-- Timeout par commande (kill du sous-processus). **v1 actuel** : limites du
-  sous-processus via `ulimit` appliqué par le shell lui-même (`-t` CPU, `-f`
-  taille de fichier = quota disque, toutes deux fail-closed ; `-v` mémoire
-  1 GiO en best-effort car RLIMIT_AS n'existe pas sur macOS/BSD).
-- **Planifié v2** : les `ulimit` sont **retirés** ; les limites deviennent
-  **par entrée** dans le manifeste TOML `trusted.toml` (`timeout_secs`,
-  `max_write_bytes` = quantité d'écriture disque, `mem_bytes`, `cpus`,
-  `network`, flags optionnels dont `no_path_check`), appliquées par le backend
-  OS (seatbelt / landlock / WSL2) + le timeout/kill de la console — voir
-  [platforms.md](platforms.md) §4 et [plugins.md](plugins.md).
+- **Plus d'`ulimit`** (décision v2 livrée) : le shell exécute `{command} "$@"`
+  tel quel. Le timeout wall-clock + kill du **groupe de processus** est appliqué
+  par la console elle-même : `timeout_secs` par entrée (défaut
+  `--timeout-secs`), le fils étant spawné dans son propre groupe de processus
+  (`process_group(0)`, kill du groupe à la deadline).
+- Les limites `max_write_bytes` = quantité d'écriture disque, `mem_bytes`,
+  `cpus`, `network` sont **par entrée** dans `trusted.toml`, appliquées par le
+  backend OS (seatbelt / landlock / WSL2). Tant qu'aucun backend n'est
+  disponible, une entrée qui en déclare une est refusée `denied` (fail-closed) ;
+  une entrée sans limite déclarée garde le comportement v1 (réseau joignable,
+  périmètre = revue humaine + checksum) — voir [platforms.md](platforms.md) §4
+  et [plugins.md](plugins.md).
+- `help` liste les entrées trusted avec leurs limites déclarées.
 - **Mode serveur** (voir [security.md](security.md)) : la cage ne contient pas de
   `/bin/sh` système ; si un busybox statique a été stagé
   (`--sandbox-busybox`), `trusted` s'exécute via `<busybox> sh -c` avec

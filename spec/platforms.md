@@ -77,7 +77,9 @@ généré depuis l'entrée TOML (`trusted.toml`) + les `Limits` globaux.
 ## 4. Retrait des `ulimit` (décision liée)
 
 Le script shell des commandes trusted (`ulimit -v/-t/-f` dans `trusted.rs`)
-est **retiré** :
+est **retiré** ✅ (livré avec le manifeste `trusted.toml`) : le shell exécute
+`{command} "$@"` tel quel, et la console applique le timeout wall-clock + le
+kill du **groupe de processus** (`process_group(0)` + kill du pgid).
 
 - `ulimit -v` (RLIMIT_AS) **n'existe pas sur macOS/BSD** (best-effort silencieux
   aujourd'hui) ;
@@ -100,7 +102,9 @@ Conséquence honnête : sans `ulimit`, le quota disque d'un sous-processus
 arbitraire ne peut pas être borné en pur userspace sur toutes les plateformes —
 il est imposé par le backend (FS deny hors root + répertoires d'écriture
 déclarés, disque VHD borné en WSL2). Une entrée qui déclare des limites sans
-backend disponible = `denied` (fail-closed).
+backend disponible = `denied` (fail-closed) — **règle déjà en vigueur** :
+`max_write_bytes`/`mem_bytes`/`cpus`/`network` déclarés dans `trusted.toml`
+sont refusés à l'exécution tant que ce chapitre (backends) n'est pas livré.
 
 ## 5. Phases proposées
 
