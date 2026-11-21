@@ -18,7 +18,7 @@ la-console/
         parse.rs      # parser shell cadré : shell-words + opérateurs whitelistés -> arbre de commandes
         resolve.rs    # resolve() : confinement root, unique point de passage
         commands/     # whitelist: cat, ls, echo, grep, sed, sub, http + filtres de flux head/tail/wc/sort/uniq/cut/tr (stream.rs = helpers communs)
-        trusted.rs    # commandes trusted : parsing + wrapping + checksum + scan + exécution (/bin/sh en mode user, busybox sh dans la cage en mode server)
+        trusted.rs    # commandes trusted : manifeste TOML v2 (trusted.toml) + format v1 (trusted.txt), checksum sha256, exécution shell réduite (/bin/sh en mode user, busybox sh dans la cage en mode server) ; plus d'ulimit : timeout/kill du groupe de processus par la console
         sandbox.rs    # mode serveur : unshare userns+chroot, staging du binaire/libs, mini-image de cage (busybox + outillage)
         platform.rs   # (prévu v2) couche d'abstraction OS : primitives fs, spawn+limites, backends seatbelt/WSL2/landlock
         sink.rs       # trait Sink + FileSink / CallerSink / PipeSink
@@ -52,8 +52,8 @@ la-console/
 | `ls` (respecte .gitignore, bornes) | `ignore` (walker ripgrep) |
 | Checksum sha256 des commandes trusted | `sha2` |
 | Regex des fichiers sensibles | `regex` (temps linéaire, pas de ReDoS) |
-| Limites du sous-processus trusted | v1 : `ulimit` appliqué par le shell lancé (pas de crate, pas d'`unsafe`) ; **v2 prévu : backend OS (seatbelt/landlock/WSL2) + limites par entrée TOML, `ulimit` retiré** |
-| Manifeste TOML `trusted.toml` (prévu v2) | `toml` (à épingler en direct ; `toml_edit` déjà présent transitivement dans le lock) |
+| Limites du sous-processus trusted | ✅ `ulimit` retiré ; timeout/kill du groupe de processus par la console (std, pas d'`unsafe`) ; limites par entrée TOML (`max_write_bytes`/`mem_bytes`/`cpus`/`network`) en attente du backend OS (seatbelt/landlock/WSL2), refusées fail-closed entre-temps |
+| Manifeste TOML `trusted.toml` | `toml` (épinglé en direct) |
 | `git` whitelist read-only (prévu v2) | `git2` (à auditer : `libgit2-sys` natif, toolchain C requise) |
 | Erreurs typées | `thiserror` |
 | CLI | `clap` |

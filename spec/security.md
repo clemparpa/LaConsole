@@ -73,7 +73,7 @@ sur disque, et empêcher qu'une sortie contamine l'interprétation côté appela
   `.exe`, `/mnt/c`, réseau NAT, socket docker — désactivés sauf déclaration
   explicite). Fail-closed : backend indisponible = `denied`, jamais de mode
   dégradé, aucun privilège requis.
-- **Décision v2 : retrait des `ulimit`** du shell des commandes trusted —
+- **✅ Décision v2 livrée : retrait des `ulimit`** du shell des commandes trusted —
   remplacés par les limites **par entrée** du manifeste TOML (`timeout_secs`,
   `max_write_bytes`, `mem_bytes`, `cpus`, `network`), appliquées par le backend
   OS, plus le timeout wall-clock + kill appliqués par la console elle-même

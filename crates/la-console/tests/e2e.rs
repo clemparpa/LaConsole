@@ -180,6 +180,137 @@ fn e2e_trusted_denied_when_not_configured() {
     assert!(child.wait().unwrap().success());
 }
 
+fn trusted_toml_fixture(content: &str) -> TrustedFixture {
+    let root = tempfile::tempdir().unwrap();
+    let trusted_dir = tempfile::tempdir().unwrap();
+    let trusted_file = trusted_dir.path().join("trusted.toml");
+    std::fs::write(&trusted_file, content).unwrap();
+    let sha256 = la_console::trusted::sha256_hex(content.as_bytes());
+    TrustedFixture {
+        root,
+        _trusted_dir: trusted_dir,
+        trusted_file,
+        sha256,
+    }
+}
+
+#[test]
+fn e2e_trusted_toml_executes_with_valid_checksum() {
+    let fx = trusted_toml_fixture("[commands.hello]\ncommand = \"echo hi-from-toml\"\n");
+    let mut child = spawn_console(&fx, &fx.sha256);
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "trusted hello"}}"#).unwrap();
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "help"}}"#).unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(resp["stdout"], "hi-from-toml\n");
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    assert!(resp["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("hello = echo hi-from-toml"));
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn e2e_trusted_toml_denied_on_checksum_mismatch() {
+    let fx = trusted_toml_fixture("[commands.hello]\ncommand = \"echo hi\"\n");
+    let bad_sha = "00".repeat(32);
+    let mut child = spawn_console(&fx, &bad_sha);
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "trusted hello"}}"#).unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert!(resp["stderr"].as_str().unwrap().contains("checksum"));
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn e2e_trusted_toml_backend_limit_denied_without_backend() {
+    let fx =
+        trusted_toml_fixture("[commands.build]\ncommand = \"true\"\nmax_write_bytes = 1048576\n");
+    let mut child = spawn_console(&fx, &fx.sha256);
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "trusted build"}}"#).unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+    let stderr = resp["stderr"].as_str().unwrap();
+    assert!(stderr.contains("max_write_bytes"), "got: {stderr}");
+    assert!(stderr.contains("fail-closed"), "got: {stderr}");
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn e2e_trusted_toml_entry_timeout_overrides_global() {
+    let fx = trusted_toml_fixture("[commands.slow]\ncommand = \"sleep 30\"\ntimeout_secs = 1\n");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(fx.root.path())
+        .arg("--timeout-secs")
+        .arg("30")
+        .arg("--trusted-file")
+        .arg(&fx.trusted_file)
+        .arg("--trusted-sha256")
+        .arg(&fx.sha256)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "trusted slow"}}"#).unwrap();
+    stdin.flush().unwrap();
+
+    let start = std::time::Instant::now();
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 3);
+    assert_eq!(resp["kind"], "limit");
+    assert!(resp["stderr"]
+        .as_str()
+        .unwrap()
+        .contains("timed out after 1s"));
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
 #[test]
 fn e2e_trusted_as_pipe_head_pipes_into_whitelist() {
     let fx = trusted_fixture("lines = printf 'alpha\\nbeta\\ngamma\\n'\n");
