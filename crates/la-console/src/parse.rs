@@ -29,6 +29,8 @@ pub enum ParseError {
     SedInPlaceInPipe,
     #[error("'sub' is file-only (in-place rewrite) and is denied in stream position (after '|'), e.g. 'cat x | sub a b'")]
     SubInPipe,
+    #[error("'tee' is only allowed in stream position (after '|' in a pipe): there is no terminal stdin in this protocol; usage: <cmd> | tee <path>")]
+    TeeNeedsPipe,
     #[error("variable assignment is not allowed")]
     Assignment,
     #[error("special variable '{0}' is not allowed")]
@@ -107,11 +109,11 @@ fn sed_args_shape(argv: &[Arg]) -> (bool, bool) {
     (in_place, argv.len() > i + 1)
 }
 
-/// True when a parsed node violates the stream-position rules (paquet C of
+/// True when a parsed node violates the stream-position rules (paquets C/E of
 /// `spec/whitelist-expansion.md`): `sub` or `sed -i` after the head of a pipe,
-/// or a path-less `sed` outside a stream position. The parser rejects all of
-/// these; this predicate lets proptest/fuzz assert the invariant on any input
-/// that parsed successfully.
+/// a path-less `sed` outside a stream position, or a `tee` outside a stream
+/// position. The parser rejects all of these; this predicate lets
+/// proptest/fuzz assert the invariant on any input that parsed successfully.
 pub fn pipe_has_stream_forbidden(node: &Node) -> bool {
     match node {
         Node::Seq(nodes) => nodes.iter().any(pipe_has_stream_forbidden),
@@ -119,6 +121,7 @@ pub fn pipe_has_stream_forbidden(node: &Node) -> bool {
             let stream = idx > 0;
             match cmd_name(cmd) {
                 Some("sub") if stream => true,
+                Some("tee") if !stream => true,
                 Some("sed") => {
                     let (in_place, has_paths) = sed_args_shape(&cmd.argv);
                     (stream && in_place) || (!stream && !has_paths)
@@ -126,7 +129,10 @@ pub fn pipe_has_stream_forbidden(node: &Node) -> bool {
                 _ => false,
             }
         }),
-        Node::Simple(cmd) => cmd_name(cmd) == Some("sed") && !sed_args_shape(&cmd.argv).1,
+        Node::Simple(cmd) => {
+            cmd_name(cmd) == Some("tee")
+                || (cmd_name(cmd) == Some("sed") && !sed_args_shape(&cmd.argv).1)
+        }
     }
 }
 
@@ -437,6 +443,7 @@ impl TokenParser<'_> {
             let stream_pos = cmds.len() > 1 && idx > 0;
             match cmd_name(cmd) {
                 Some("sub") if stream_pos => return Err(ParseError::SubInPipe),
+                Some("tee") if !stream_pos => return Err(ParseError::TeeNeedsPipe),
                 Some("sed") => {
                     let (in_place, has_paths) = sed_args_shape(&cmd.argv);
                     if stream_pos {
@@ -969,6 +976,38 @@ mod tests {
         ));
         let node = parse("ls | cat > out.txt").unwrap();
         assert!(matches!(node, Node::Pipe(_)));
+    }
+
+    #[test]
+    fn tee_is_only_allowed_in_stream_position() {
+        for cmd in [
+            "tee out.txt",
+            "tee out.txt | grep x",
+            "tee out.txt < in.txt",
+            "ls && tee out.txt",
+        ] {
+            assert!(matches!(parse(cmd), Err(ParseError::TeeNeedsPipe)), "{cmd}");
+        }
+        assert!(parse("cat a | tee out.txt").is_ok());
+        assert!(parse("cat a | tee out.txt | grep x").is_ok());
+        assert!(parse("cat a | tee out.txt > out2.txt").is_ok());
+        assert!(parse("cat a | tee out.txt < in.txt").is_ok());
+    }
+
+    #[test]
+    fn pipe_has_stream_forbidden_flags_misplaced_tee() {
+        let tee = || SimpleCommand {
+            argv: vec![arg("tee"), arg("out.txt")],
+            redirects: vec![],
+        };
+        let cat = || SimpleCommand {
+            argv: vec![arg("cat"), arg("a")],
+            redirects: vec![],
+        };
+        assert!(pipe_has_stream_forbidden(&Node::Simple(tee())));
+        assert!(pipe_has_stream_forbidden(&Node::Pipe(vec![tee(), cat()])));
+        assert!(!pipe_has_stream_forbidden(&Node::Pipe(vec![cat(), tee()])));
+        assert!(!pipe_has_stream_forbidden(&Node::Simple(cat())));
     }
 
     #[test]

@@ -91,11 +91,15 @@ exécution de code.
 - Bornes : profondeur JSON max (`Limits::max_json_depth`, 128 par défaut), taille
   d'entrée déjà bornée en amont, longueur du sélecteur bornée ; parsing fail-closed.
 
-### E. `tee` (optionnel)
+### E. `tee` — ✅ décision actée, implémenté (branche `vibe/tee-stream-e-624c06`, règle actée dans `spec/commands.md` « Paquet E »)
 
 - `tee <path>` copie le flux vers un fichier via `FileSink` (resolve + sensibles
   + quota + masquage, validation **avant** ouverture) **et** vers la suite du pipe.
   Évite le fichier intermédiaire. Chemin validé avant toute exécution.
+- Règle de position enforce au parse (`TeeNeedsPipe`) : `tee` uniquement en
+  position > 0 d'un pipe (pas de stdin terminal en position 0) ; aucune option
+  en v1, exactement un opérande cible, glob interdit dans la cible (`fail`) ;
+  proptest/fuzz `pipe_has_stream_forbidden`.
 
 ## Hors scope (restent `trusted` ou refusés)
 
@@ -131,4 +135,5 @@ composables en tête de pipe (PR #30).
 2c. Paquet A3 — `-f`/`--file` (patterns) et `--exclude-from` (globs) ✅ implémenté (même branche, décision dans `spec/commands.md`) : lecture via `read_bounded` (resolve + sensibles + `max_read_bytes`), UTF-8 strict, lignes vides ignorées, `max_grep_patterns` = 10 000, 4096 o/ligne, globs du fichier comptés dans `max_grep_globs`) ;
 3. Paquet B — filtres de flux (`head`/`tail`/`wc`/`sort`/`uniq`/`cut`/`tr`) ✅ implémenté (branche `vibe/stream-filters-b-c4cd4a`, décision actée dans `spec/commands.md` « Filtres de flux » : `Limits::max_stream_lines` = 100 000, `head`/`tail` N ≤ min(10 000, `max_stream_lines`), `cut` ≤ 256 champs, `tr` sets ≤ 1024 chars) ;
 4. Paquet C — `sed` sur flux ✅ implémenté (branche `vibe/sed-stream-c-090baf`) : `sed s/…/…/` sans chemin accepté uniquement en position > 0 du pipe (enforce au parse, `SedStreamNeedsPipe` sinon), `sed -i` refusé en position de flux (`SedInPlaceInPipe`), `sub` `denied` en position de flux (`SubInPipe`), UTF-8 strict, proptest/fuzz `pipe_has_stream_forbidden` ;
-5. Paquet D (`json`) ✅ implémenté (branche `vibe/json-extractor-d-b83094`) ; paquet E (`tee`) uniquement si un besoin mesuré le justifie.
+5. Paquet D (`json`) ✅ implémenté (branche `vibe/json-extractor-d-b83094`) ;
+6. Paquet E (`tee`) ✅ implémenté (branche `vibe/tee-stream-e-624c06`).

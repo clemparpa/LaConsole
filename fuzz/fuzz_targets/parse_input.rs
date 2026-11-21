@@ -15,7 +15,7 @@ fuzz_target!(|data: &[u8]| {
         );
         assert!(
             !la_console::parse::pipe_has_stream_forbidden(&node),
-            "stream-forbidden command (sub/sed -i after '|', path-less sed elsewhere) for input {input:?}"
+            "stream-forbidden command (sub/sed -i after '|', path-less sed or tee outside stream position) for input {input:?}"
         );
         for cmd in la_console::parse::all_commands(&node) {
             for arg in &cmd.argv {

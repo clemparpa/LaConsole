@@ -56,7 +56,10 @@ les filtres de flux in-process `head [-n N]`, `tail [-n N]`, `wc [-l|-w|-c]`,
 `sort [-r]`, `uniq [-c]`, `cut -d <sep> -f <n[,m...]>`, `tr <from> <to>` (lisent
 l'entrée pipe/`<` sans chemin, bornés, UTF-8 strict, aucune écriture disque),
 l'extracteur JSON `json <selector> [path...]` (sélecteur `a.b[0].c`, lit le flux
-pipe/`<` sans chemin, profondeur bornée, parsing fail-closed) et
+pipe/`<` sans chemin, profondeur bornée, parsing fail-closed),
+`tee <path>` (position de flux uniquement, après `|` : copie le flux dans un
+fichier via `FileSink` — resolve + sensibles + quota + masquage, validation
+avant ouverture — et le passe inchangé à la suite du pipe ; aucune option) et
 `help [commande]` (liste les commandes disponibles et leurs syntaxes) sont
 disponibles. Toute autre commande est refusée (`denied: unknown command`,
 code 2).
