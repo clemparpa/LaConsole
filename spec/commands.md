@@ -295,12 +295,16 @@ possible : elle s'applique à la sortie passée à l'identique, via `FileSink`.
   2. **scan des changements** depuis la dernière exécution validée (diff du
      fichier + du code de test associé) pour détecter du code adversarial ;
   3. exécution uniquement si checksum attendu == checksum constaté et scan OK.
-- Timeout par commande (kill du sous-processus), limites du sous-processus via
-  `ulimit` appliqué par le shell lui-même (`-t` CPU, `-f` taille de fichier =
-  quota disque, toutes deux fail-closed ; `-v` mémoire 1 GiO en best-effort car
-  RLIMIT_AS n'existe pas sur macOS/BSD) : les limites ne touchent que le
-  sous-processus, jamais le processus console (pas de `setrlimit` global, donc
-  pas besoin de `unsafe`/`pre_exec`).
+- Timeout par commande (kill du sous-processus). **v1 actuel** : limites du
+  sous-processus via `ulimit` appliqué par le shell lui-même (`-t` CPU, `-f`
+  taille de fichier = quota disque, toutes deux fail-closed ; `-v` mémoire
+  1 GiO en best-effort car RLIMIT_AS n'existe pas sur macOS/BSD).
+- **Planifié v2** : les `ulimit` sont **retirés** ; les limites deviennent
+  **par entrée** dans le manifeste TOML `trusted.toml` (`timeout_secs`,
+  `max_write_bytes` = quantité d'écriture disque, `mem_bytes`, `cpus`,
+  `network`, flags optionnels dont `no_path_check`), appliquées par le backend
+  OS (seatbelt / landlock / WSL2) + le timeout/kill de la console — voir
+  [platforms.md](platforms.md) §4 et [plugins.md](plugins.md).
 - **Mode serveur** (voir [security.md](security.md)) : la cage ne contient pas de
   `/bin/sh` système ; si un busybox statique a été stagé
   (`--sandbox-busybox`), `trusted` s'exécute via `<busybox> sh -c` avec
@@ -308,3 +312,20 @@ possible : elle s'applique à la sortie passée à l'identique, via `FileSink`.
   `HOME=/tmp`, `LD_LIBRARY_PATH` vers les libs stagées et `GOROOT` détecté si
   une toolchain go est dans `/opt/la-console-tools`. Sans busybox stagé,
   `trusted` = `denied` (fail-closed).
+
+## Commande `git` (whitelist, planifiée v2)
+
+- **Read-only d'abord**, in-process via la crate `git2` (libgit2 — nouvelle
+  dépendance à auditer via `cargo deny`, toolchain C requise) : `git status`,
+  `git diff [-- <path...>]`, `git log [-n N] [-- <path...>]`, `git show <rev>`,
+  `git branch [-a]`, `git rev-parse <rev>`. Alternative à trancher : spawn du
+  binaire `git` épinglé par sha256 avec sous-commandes fixées et args validés
+  (mécanisme plugin, moins « in-process »).
+- Règles communes : `cwd = root` (le dépôt = le root), tous les chemins
+  d'arguments passent par `resolve()` + sensibles, sortie via
+  `CallerSink`/`PipeSink` (bornée, masquage des secrets), composable en pipe
+  comme les filtres de flux, timeout par commande, **aucun réseau**
+  (`push`/`pull`/`fetch`/`clone` = `trusted` uniquement).
+- **Mutations** (`add`, `commit`, `checkout`, `rebase`, `push`…) : restent
+  `trusted` (déclarées par l'humain, épinglées sha256) en v2 ; un sous-ensemble
+  whitelist pourra être décidé plus tard.

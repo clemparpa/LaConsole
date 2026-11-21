@@ -84,6 +84,28 @@ La v1 est Unix-only (Linux + macOS), documenté.
 - Defense in depth : au démarrage dans la cage, `/bin`, `/opt/la-console-tools` et le dossier de libs stagées sont remountés read-only (bind + remount,ro via l'applet `mount` de busybox ; le processus est root dans son propre user namespace, le remount ne fuite pas sur l'hôte) pour empêcher l'agent d'écraser un outil via une écriture whitelist. **Fail-closed** : si un remount échoue, la console refuse de démarrer (exit 2).
 - **Testable** : tests unitaires du staging (refus busybox dynamique/non-ELF/sha faux, copie de l'outillage + deps ELF, symlinks d'applets), tests `trusted` en cage via faux busybox, e2e Linux (outillage visible dans la cage, `trusted` via vrai busybox statique quand disponible, `trusted` toujours refusé sans busybox).
 
+## v2 — prochaine fournée planifiée 🚧 (brouillon soumis à revue)
+
+- **Retirer les `ulimit`** du shell des commandes trusted : limites par entrée
+  (manifeste TOML) appliquées par le backend OS + timeout/kill appliqué par la
+  console (cf. `spec/platforms.md` §4, `spec/plugins.md`).
+- **Manifeste TOML `trusted.toml`** pour les commandes trusted : flags
+  optionnels (`no_path_check`), `timeout_secs`, `max_write_bytes` (quantité
+  d'écriture disque), `mem_bytes`/`cpus`, `network` par entrée ; épinglage
+  sha256 conservé, re-vérifié avant chaque exécution (cf. `spec/plugins.md`).
+- **Architecture multi-plateforme** : couche d'abstraction `platform.rs`,
+  supprimer le spécifique Linux (`st_dev`/`st_ino` dans `resolve.rs`, `/bin/sh`
+  + `ulimit` dans `trusted.rs`, `unshare` dans `sandbox.rs`, symlinks des tests)
+  (cf. `spec/platforms.md`).
+- **Backends de confinement OS** : macOS = **seatbelt** (`sandbox-exec`, profil
+  SBPL généré par entrée), Windows = console dans **WSL2** (VM utilitaire,
+  ponts host désactivés sauf déclarés : interop `.exe`, `/mnt/c`, réseau, socket
+  docker), Linux = landlock par spawn + cage userns+chroot existante
+  (cf. `spec/platforms.md`, `spec/security.md`).
+- **Commandes `git` en whitelist** : read-only d'abord (`status`/`diff`/`log`/
+  `show`/`branch`/`rev-parse`, in-process via `git2`) ; mutations (`add`,
+  `commit`, `push`…) restent `trusted` (cf. `spec/commands.md`).
+
 ## v2 (backlog)
 
 - **Pipe `trusted | whitelist`, tête uniquement** 🚧 (cette PR) : `trusted` est accepté comme **premier élément** d'un pipe (`trusted run-tests | grep ERROR`) ; toute autre position (`whitelist | trusted …`, `a | trusted … | b`, `trusted a | trusted b`) reste `denied` au parse (`TrustedInPipe`). Le stdin du shell trusted reste `null` — aucun octet pipé ne peut lui être fourni ni interprété ; sa sortie est bornée via `PipeSink` (troncature) puis passée aux commandes whitelist suivantes, chacune revalidée (niveaux 1–3) ; redirection `>`/`>>` toujours réservée au dernier élément, via `FileSink`. Le checksum sha256 de `trusted.txt` est re-vérifié avant chaque exécution, y compris en tête de pipe. Proptest : jamais de `trusted` après la tête d'un pipe (`pipe_has_misplaced_trusted`). Cf. `spec/plugins.md` (phase 2). **Testable** : tests unitaires parse + exécution (pipe tête → `grep`, redirect, checksum) + e2e.

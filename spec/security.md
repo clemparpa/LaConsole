@@ -58,13 +58,27 @@ sur disque, et empêcher qu'une sortie contamine l'interprétation côté appela
     cage accessible en écriture n'est pas un déploiement acceptable.
   - **Commandes trusted en mode serveur** : avec un busybox stagé, `trusted`
     s'exécute via `<busybox> sh -c` (`PATH` cage, `HOME=/tmp`, `GOROOT` détecté
-    si présent, limites `ulimit` identiques au mode user). **Sans busybox
-    stagé, `trusted` reste `denied` (fail-closed)** et seules les commandes
-    whitelistées tournent en mode serveur.
+    si présent). **Sans busybox stagé, `trusted` reste `denied` (fail-closed)**
+    et seules les commandes whitelistées tournent en mode serveur.
   - **Réseau** : la cage partage le namespace réseau de l'hôte (pas de
     `--net`) pour garder la commande `http` vers localhost ; une commande
     trusted peut donc joindre le réseau, comme en mode user — le périmètre
-    reste le chroot, pas le réseau.
+    reste le chroot, pas le réseau. Sur macOS, le profil seatbelt fait
+    `deny network*` (ou loopback seul) ; sur Windows/WSL2, le réseau de la VM
+    est restreint par firewall.
+- **v2 par plateforme (planifié — voir [platforms.md](platforms.md))** : backend
+  de confinement OS — Linux : cage userns+chroot (livré) + landlock par spawn ;
+  macOS : **seatbelt** (`sandbox-exec`, profil SBPL généré par entrée trusted) ;
+  Windows : console lancée dans **WSL2** (VM utilitaire ; ponts host — interop
+  `.exe`, `/mnt/c`, réseau NAT, socket docker — désactivés sauf déclaration
+  explicite). Fail-closed : backend indisponible = `denied`, jamais de mode
+  dégradé, aucun privilège requis.
+- **Décision v2 : retrait des `ulimit`** du shell des commandes trusted —
+  remplacés par les limites **par entrée** du manifeste TOML (`timeout_secs`,
+  `max_write_bytes`, `mem_bytes`, `cpus`, `network`), appliquées par le backend
+  OS, plus le timeout wall-clock + kill appliqués par la console elle-même
+  (cf. [platforms.md](platforms.md) §4). Raison : `ulimit -v` n'existe pas sur
+  macOS et borne l'address space virtuel, pas la RSS réelle.
 
 ## Fichiers sensibles
 
