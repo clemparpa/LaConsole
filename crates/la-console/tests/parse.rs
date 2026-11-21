@@ -53,6 +53,25 @@ fn sed_without_path_is_only_allowed_in_stream_position() {
 }
 
 #[test]
+fn tee_is_only_allowed_in_stream_position() {
+    for cmd in [
+        "tee out.txt",
+        "tee out.txt | grep x",
+        "tee out.txt < in.txt",
+        "ls && tee out.txt",
+    ] {
+        assert!(
+            matches!(parse_input(cmd, &no_vars()), Err(ParseError::TeeNeedsPipe)),
+            "{cmd}"
+        );
+    }
+    assert!(parse_input("cat a | tee out.txt", &no_vars()).is_ok());
+    assert!(parse_input("cat a | tee out.txt | grep x", &no_vars()).is_ok());
+    assert!(parse_input("cat a | tee out.txt > out2.txt", &no_vars()).is_ok());
+    assert!(parse_input("cat a | tee out.txt < in.txt", &no_vars()).is_ok());
+}
+
+#[test]
 fn sed_dash_i_and_sub_are_denied_in_stream_position() {
     assert!(matches!(
         parse_input(r#"cat x | sed -i "s/a/b/" f.txt"#, &no_vars()),
@@ -93,7 +112,7 @@ mod proptests {
             if let Ok(node) = parse_input(&input, &no_vars()) {
                 prop_assert!(
                     !pipe_has_stream_forbidden(&node),
-                    "sub/sed -i in stream position or path-less sed outside stream for {input:?}"
+                    "sub/sed -i/tee misplaced in a pipe or path-less sed/tee outside stream for {input:?}"
                 );
             }
         }

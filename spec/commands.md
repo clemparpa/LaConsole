@@ -26,6 +26,7 @@ sensibles**, même après expansion de glob ou substitution de variable.
 | `sort [-r] [path...]` / `uniq [-c] [path...]` | ✅ | idem |
 | `cut -d <sep> -f <n[,m...]> [path...]` / `tr <from> <to> [path...]` | ✅ | idem |
 | `json <selector> [path...]` | ✅ | extracteur JSON minimal (paquet D) : voir « Paquet D » ci-dessous |
+| `tee <path>` (position de flux uniquement, après `\|`) | ✅ | paquet E : voir « Paquet E » ci-dessous |
 | `http <METHOD> <url> [--data <body>] [--header k:v]` | ✅ | implémentation **Rust maison** (pas de binaire curl), crate `reqwest` + rustls côté console. Allowlist d'hôtes : v1 = `localhost`/`127.0.0.1`/`::1` uniquement, extensible via liste déclarée par l'humain. Blocage des IP de métadonnées cloud (169.254.169.254) et plages privées non déclarées. Timeout court, taille de réponse bornée, redirects revalidés contre l'allowlist. `--data` borné en taille |
 | `&&` | ✅ | chaînage séquentiel, stop au 1er échec. **Les deux côtés doivent être whitelist ou trusted.** Jamais de vrai shell |
 | `;` | ✅ | interprété comme `&&` (plus strict que bash : stop au 1er échec) |
@@ -238,6 +239,33 @@ de sortie par source**.
 - Codes de sortie : 0 succès, 1 `fail` (usage, option, sélecteur invalide, JSON
   invalide, type incompatible, fichier absent — les autres fichiers continuent,
   message sur stderr), 2 `denied`, 3 `limit`.
+
+## Paquet E de whitelist-expansion (décision actée) : `tee`
+
+Syntaxe : `tee <path>` — **uniquement en position de flux** (après `|` dans un
+pipe) : ce protocole n'a pas de stdin terminal, donc `tee` hors position de
+flux (commande seule ou tête de pipe) est rejeté au parse (`TeeNeedsPipe`,
+`denied` code 2). En dernière position de pipe, une redirection `>`/`>>` reste
+possible : elle s'applique à la sortie passée à l'identique, via `FileSink`.
+
+- **Sémantique** : copie le flux d'entrée (pipe, ou redirection `<` qui a
+  priorité) dans le fichier cible **et** le passe **inchangé** à la suite du
+  pipe : `cat app.log | tee copy.txt | grep ERROR` écrit `copy.txt` et affiche
+  les lignes `ERROR`. Évite le fichier intermédiaire.
+- **Écriture** : exactement comme une redirection `>` — via `FileSink`
+  (`write_file`) : `resolve()` + fichiers sensibles + `max_write_bytes` +
+  `DiskQuota` partagé avec les redirections de la même commande + masquage des
+  secrets, **validation avant ouverture** (échec = aucun octet écrit, aucun
+  fichier créé). Le flux transmis à la suite du pipe n'est pas masqué (comme
+  `cat` : le masquage se fait en bout de pipe via `CallerSink`).
+- **Aucune option** en v1 (`-a`/`--append` non supportés : toute option =
+  `fail` « unsupported option ») ; exactement **un** opérande cible, et aucun
+  glob autorisé dans la cible (`fail`).
+- Codes de sortie : 0 succès, 1 `fail` (usage, option inconnue, glob dans la
+  cible), 2 `denied` (chemin hors du root, fichier sensible), 3 `limit`
+  (borne d'écriture `max_write_bytes` ou quota disque par commande).
+- Invariant testé par proptest/fuzz : `pipe_has_stream_forbidden` — jamais de
+  `tee` hors position de flux dans une entrée qui parse.
 
 ## Commandes trusted
 

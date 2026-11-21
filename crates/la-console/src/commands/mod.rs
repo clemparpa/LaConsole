@@ -12,6 +12,7 @@ pub mod sort;
 pub(crate) mod stream;
 pub mod sub;
 pub mod tail;
+pub mod tee;
 pub mod tr;
 pub mod uniq;
 pub mod wc;
@@ -456,6 +457,16 @@ pub static COMMANDS: &[CommandSpec] = &[
         ],
         summary: "count lines/words/bytes of the input (all three by default); streaming",
         run: wc::run,
+    },
+    CommandSpec {
+        name: "tee",
+        syntaxes: &[
+            "tee <path> (pipe stream only, after '|')",
+            "tee <path> (after '|') | <cmd...>",
+            "tee <path> (after '|', last element) > <path>",
+        ],
+        summary: "copy the pipe/'<' input to a file via FileSink (resolve + sensibles + quota + masking, validated before opening) and pass it through unchanged; stream position only (after '|'), exactly one target path, no options",
+        run: tee::run,
     },
     CommandSpec {
         name: "trusted",

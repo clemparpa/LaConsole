@@ -306,6 +306,99 @@ fn e2e_sed_on_stream_in_pipe() {
 }
 
 #[test]
+fn e2e_tee_copies_stream_to_file_in_pipe() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("app.log"),
+        "INFO start\nERROR boom\nINFO end\n",
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let cmds = [
+        r#"cat app.log | tee copy.txt | grep ERROR"#,
+        r#"cat app.log | tee c2.txt > c3.txt"#,
+        "cat copy.txt",
+        "tee x.txt",
+        r#"cat app.log | tee ../evil.txt"#,
+        r#"cat app.log | tee -a out.txt"#,
+    ];
+    for cmd in cmds {
+        writeln!(
+            stdin,
+            r#"{{"op": "exec", "cmd": {}}}"#,
+            serde_json::to_string(cmd).unwrap()
+        )
+        .unwrap();
+    }
+    stdin.flush().unwrap();
+
+    let mut next = || {
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        serde_json::from_str::<serde_json::Value>(&line).unwrap()
+    };
+
+    let resp = next();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["code"], 0);
+    assert_eq!(resp["stdout"], "(stdin):2:ERROR boom\n");
+
+    let resp = next();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "");
+
+    let resp = next();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "INFO start\nERROR boom\nINFO end\n");
+
+    // tee alone (no pipe): denied at parse
+    let resp = next();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+
+    // tee to an escaping path: denied, nothing created outside the root
+    let resp = next();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+
+    // tee with an unknown option: fail (code 1)
+    let resp = next();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 1);
+    assert_eq!(resp["kind"], "fail");
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    let expected = "INFO start\nERROR boom\nINFO end\n";
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("copy.txt")).unwrap(),
+        expected
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("c2.txt")).unwrap(),
+        expected
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("c3.txt")).unwrap(),
+        expected
+    );
+    assert!(!dir.path().join("x.txt").exists());
+    assert!(!dir.path().parent().unwrap().join("evil.txt").exists());
+    assert!(!dir.path().join("out.txt").exists());
+}
+
+#[test]
 fn e2e_max_output_bytes_truncates_stdout() {
     let dir = tempfile::tempdir().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
