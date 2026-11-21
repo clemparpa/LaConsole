@@ -83,11 +83,13 @@ exécution de code.
   `cat x | sed s/a/b/ > out.txt` fonctionne (redirection réservée au dernier
   élément du pipe, via `FileSink`).
 
-### D. Extracteur JSON minimal (optionnel, phase tardive)
+### D. Extracteur JSON minimal — ✅ décision actée, implémenté (branche `vibe/json-extractor-d-b83094`, règle actée dans `spec/commands.md` « Paquet D »)
 
-- `json <path...>` lit un flux/fichier JSON (`serde_json`, déjà dépendance) et
-  extrait un champ, ex. `http GET http://127.0.0.1:8080/x | json body .items[0].name`.
-- Bornes : profondeur JSON max, taille d'entrée déjà bornée ; parsing fail-closed.
+- `json <selector> [path...]` lit un flux/fichier JSON (`serde_json`, déjà dépendance) et
+  extrait un champ, ex. `http GET http://127.0.0.1:8080/x | json body.items[0].name`
+  (sélecteur en un seul mot ; `.` = document entier).
+- Bornes : profondeur JSON max (`Limits::max_json_depth`, 128 par défaut), taille
+  d'entrée déjà bornée en amont, longueur du sélecteur bornée ; parsing fail-closed.
 
 ### E. `tee` (optionnel)
 
@@ -109,8 +111,9 @@ composables en tête de pipe (PR #30).
   `sort`/`uniq` bornés en mémoire (`max_stream_lines`) ; UTF-8 invalide = `fail`.
 - **C** : règle de position enforce au parse ; `-i` interdit sur flux ; toute
   réécriture passe par `FileSink` (jamais d'ouverture directe).
-- **D/E** : `serde_json` fail-closed + profondeur bornée ; `tee` = `FileSink`, donc
-  les mêmes garanties que `>`/`>>`.
+- **D** : `serde_json` fail-closed + profondeur bornée (`max_json_depth`) ;
+  sélecteur parsé strictement (fail-closed), aucune option acceptée.
+- **E** : `tee` = `FileSink`, donc les mêmes garanties que `>`/`>>`.
 
 ## Tests (cf. spec/testing.md)
 
@@ -128,4 +131,4 @@ composables en tête de pipe (PR #30).
 2c. Paquet A3 — `-f`/`--file` (patterns) et `--exclude-from` (globs) ✅ implémenté (même branche, décision dans `spec/commands.md`) : lecture via `read_bounded` (resolve + sensibles + `max_read_bytes`), UTF-8 strict, lignes vides ignorées, `max_grep_patterns` = 10 000, 4096 o/ligne, globs du fichier comptés dans `max_grep_globs`) ;
 3. Paquet B — filtres de flux (`head`/`tail`/`wc`/`sort`/`uniq`/`cut`/`tr`) ✅ implémenté (branche `vibe/stream-filters-b-c4cd4a`, décision actée dans `spec/commands.md` « Filtres de flux » : `Limits::max_stream_lines` = 100 000, `head`/`tail` N ≤ min(10 000, `max_stream_lines`), `cut` ≤ 256 champs, `tr` sets ≤ 1024 chars) ;
 4. Paquet C — `sed` sur flux ✅ implémenté (branche `vibe/sed-stream-c-090baf`) : `sed s/…/…/` sans chemin accepté uniquement en position > 0 du pipe (enforce au parse, `SedStreamNeedsPipe` sinon), `sed -i` refusé en position de flux (`SedInPlaceInPipe`), `sub` `denied` en position de flux (`SubInPipe`), UTF-8 strict, proptest/fuzz `pipe_has_stream_forbidden` ;
-5. Paquets D (`json`) et E (`tee`) uniquement si un besoin mesuré les justifie.
+5. Paquet D (`json`) ✅ implémenté (branche `vibe/json-extractor-d-b83094`) ; paquet E (`tee`) uniquement si un besoin mesuré le justifie.
