@@ -34,7 +34,8 @@ copié tel quel dans le dépôt public du projet.
 | [protocol.md](protocol.md) | Interface externe : CLI, protocole ligne par ligne stdin/stdout, format JSON des réponses |
 | [architecture.md](architecture.md) | Pipeline de validation à 3 niveaux, interface d'écriture unique (Sink) |
 | [commands.md](commands.md) | Whitelist des commandes, commandes trusted, règles de parsing |
-| [plugins.md](plugins.md) | Brouillon v2 : intégration agent (pi, etc.) sur macOS/Linux — commandes autorisées épinglées, composabilité, confinement par backend OS natif |
+| [plugins.md](plugins.md) | Brouillon v2 : intégration agent (pi, etc.) — commandes autorisées épinglées (manifeste TOML `trusted.toml` prévu), composabilité, confinement par backend OS natif |
+| [platforms.md](platforms.md) | Brouillon v2 : plan multi-plateforme — couche d'abstraction OS, backends seatbelt (macOS) / WSL2 (Windows) / landlock+cage (Linux), retrait des `ulimit`, inventaire du code spécifique Linux |
 | [whitelist-expansion.md](whitelist-expansion.md) | Élargir la whitelist pour l'ergonomie agent : filtres de flux `head`/`tail`/`sort`/`uniq`/`wc`/`cut`/`tr`, flags `grep` `-v`/`-i`/`-c`…, `sed` sur flux et `json` ✅ implémentés ; `tee` reste optionnel |
 | [security.md](security.md) | Modèle de menaces, confinement (`resolve()`), fichiers sensibles, masquage des secrets, vecteurs d'évasion |
 | [testing.md](testing.md) | Stratégie de test et outillage : fmt, clippy, tests unitaires, proptest, e2e, fuzzing, mutation testing, CI |
