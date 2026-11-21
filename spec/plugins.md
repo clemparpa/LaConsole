@@ -20,7 +20,7 @@ Deux familles de commandes :
    (`#![forbid(unsafe_code)]`), confinées par `resolve()` + sensibles + sinks +
    bornes ;
 2. **Commandes autorisées par l'utilisateur**, inscrites dans le repo de l'agent
-   (revue humaine en PR, épinglées sha256 comme `trusted.txt`), et **composables
+   (revue humaine en PR, épinglées sha256 comme `trusted.toml`), et **composables
    avec les commandes de base** — ex. `trusted run-tests | grep ERROR` pour lire
    des logs illisibles. `trusted` existe (v1) avec `;`/`&&` ; **le pipe
    `trusted → whitelist` est livré 🚧 (cette PR, tête de pipe uniquement,
@@ -78,10 +78,10 @@ d'args **par sous-commande** :
 
 ## Manifeste TOML des commandes trusted (`trusted.toml`, v2) — ✅ livré
 
-Remplace le format ligne `trusted.txt` (v1) par un **TOML strict**, toujours
-épinglé par `--trusted-sha256` et re-vérifié avant **chaque** exécution.
-Détection par extension : `.toml` = v2, `.txt` = v1 (compat, le temps de la
-migration), toute autre extension = refus fail-closed.
+Format **TOML strict**, toujours épinglé par `--trusted-sha256` et re-vérifié
+avant **chaque** exécution. Détection par extension : `.toml` uniquement —
+le format v1 `trusted.txt` a été retiré, toute autre extension = refus
+fail-closed.
 
 > Statut : `command`, `no_path_check` et `timeout_secs` sont appliqués par la
 > console dès maintenant (timeout wall-clock + kill du groupe de processus).
@@ -95,10 +95,15 @@ migration), toute autre extension = refus fail-closed.
 # trusted.toml — revu en PR par l'humain, hors du root de l'agent
 [commands.build]
 command = "cargo build --release"
+description = "Compile le projet en release"
+
+[commands.build.flags]
+"--locked" = { description = "Utilise le Cargo.lock figé" }
+"-j" = {}
 
 [commands.test-e2e]
 command = "npm run test:e2e"
-no_path_check = false                 # flag optionnel (défaut false)
+no_path_check = false                 # optionnel (défaut false)
 timeout_secs = 600                    # optionnel, défaut = --timeout-secs global
 max_write_bytes = 268435456           # quota d'écriture disque de la commande
 mem_bytes = 4294967296                # optionnel, appliqué par le backend OS
@@ -108,6 +113,8 @@ network = "none"                      # none (défaut) | loopback | proxy (allow
 | Champ | Règle |
 |---|---|
 | `command` | obligatoire ; passé tel quel au shell du backend, complété par `"$@"` (args jamais réinterprétés) |
+| `description` | texte libre rendu par `help` (recommandé pour la revue humaine) |
+| `flags` | table `"<flag>" = { description = "..." }` : allowlist des arguments `-...` acceptés (`-v`, `--release`, `--jobs=4` ; nom validé `^-{1,2}[A-Za-z0-9][A-Za-z0-9_-]*(=...)?$`) ; tout `-...` non déclaré = `denied` fail-closed, même avec `no_path_check` ; les flags ne passent pas par `resolve()` |
 | `no_path_check` | bool, défaut `false` ; sinon les args-chemins passent par `resolve()` + sensibles |
 | `timeout_secs` | défaut = limite globale ; kill du processus (et du groupe) à la deadline |
 | `max_write_bytes` | **quantité d'écriture disque** de la commande, appliquée par le backend OS (FS deny hors répertoires déclarés) |

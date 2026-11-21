@@ -270,14 +270,20 @@ possible : elle s'applique à la sortie passée à l'identique, via `FileSink`.
 ## Commandes trusted
 
 - Définies par l'humain dans un fichier dédié du dépôt où tourne l'agent (ex.
-  `trusted.txt`), que l'agent ne peut pas modifier (revu en PR, protégé par
+  `trusted.toml`), que l'agent ne peut pas modifier (revu en PR, protégé par
   review humaine).
-- **Format de `trusted.txt`** : une entrée par ligne,
-  `<nom> [--no-path-check] = <commande shell>` ; lignes vides et `#` commentaires
-  ignorés ; `<nom>` doit matcher `^[A-Za-z_][A-Za-z0-9_-]*$` ; `--no-path-check`
-  est le seul flag autorisé en v1 ; nom dupliqué ou ligne mal formée = refus
-  total (fail-closed). La console complète la commande avec `"$@"` : les
-  arguments de l'agent sont passés tels quels, jamais réinterprétés.
+- **Format `trusted.toml`** (seul format accepté ; détection par extension :
+  `.toml` uniquement — le v1 `trusted.txt` a été retiré, toute autre extension
+  = refus fail-closed) : schéma strict (`deny_unknown_fields`, crate `toml`
+  épinglée en direct), une table `[commands.<nom>]` par entrée, `<nom>` doit
+  matcher `^[A-Za-z_][A-Za-z0-9_-]*$` ; champs : `command` (obligatoire),
+  `description` (texte libre rendu par `help`), `no_path_check`,
+  `timeout_secs`, `max_write_bytes`, `mem_bytes`, `cpus`,
+  `network` (`none`/`loopback`/`proxy`), et `flags` = table
+  `"<flag>" = { description = "..." }` (allowlist des arguments `-...` ;
+  tout flag non déclaré = `denied`). La console complète la commande avec
+  `"$@"` : les arguments de l'agent sont passés tels quels, jamais
+  réinterprétés.
 - Invoquées par l'agent via `trusted <nom>` ; la console ne parse pas le
   contenu, elle le passe tel quel à un vrai shell avec `cwd = root` et un
   environnement réduit (variables d'env minimales, `HOME` pointé hors du root).
@@ -287,9 +293,10 @@ possible : elle s'applique à la sortie passée à l'identique, via `FileSink`.
   (`denied`), le stdin du shell trusted restant `null` — aucun octet pipé ne
   peut donc être interprété par le shell.
 - Leurs arguments de chemin passent par la boucle de validation (resolve +
-  sensibles), **sauf flag explicite** déclaré par l'humain dans `trusted.txt`
-  (ex. `trusted run-tests --no-path-check`) pour les commandes qui doivent
-  légitimement toucher hors du root.
+  sensibles), **sauf `no_path_check = true`** déclaré par l'humain dans
+  `trusted.toml` pour les commandes qui doivent légitimement toucher hors du
+  root. Les arguments commençant par `-` doivent être déclarés dans `flags` ;
+  les globs dans les arguments sont toujours refusés.
 - Avant chaque exécution :
   1. **checksum** (sha256) du fichier de commandes trusted consigné ;
   2. **scan des changements** depuis la dernière exécution validée (diff du

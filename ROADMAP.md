@@ -87,10 +87,12 @@ La v1 est Unix-only (Linux + macOS), documenté.
 ## v2 — prochaine fournée planifiée 🚧 (brouillon soumis à revue)
 
 - ✅ **`trusted.toml` + retrait des `ulimit`** (cette PR) : manifeste TOML
-  strict (détection par extension `.toml` = v2 / `.txt` = v1 conservé,
-  `deny_unknown_fields`, épinglage sha256 re-vérifié avant chaque exécution)
-  avec limites par entrée (`no_path_check`, `timeout_secs`, `max_write_bytes`,
-  `mem_bytes`/`cpus`, `network`) ; plus d'`ulimit` dans le shell — la console
+  strict (`.toml` seul format accepté — v1 `.txt` retiré —, `deny_unknown_fields`,
+  épinglage sha256 re-vérifié avant chaque exécution) avec, par entrée,
+  `description`, limites (`no_path_check`, `timeout_secs`, `max_write_bytes`,
+  `mem_bytes`/`cpus`, `network`) et `flags` = allowlist des arguments `-...`
+  (avec `description` par flag, rendu par `help`) ; tout flag non déclaré =
+  `denied` fail-closed ; plus d'`ulimit` dans le shell — la console
   applique le timeout wall-clock + kill du **groupe de processus**
   (`process_group(0)`, `timeout_secs` par entrée, défaut `--timeout-secs`) ;
   les limites `max_write_bytes`/`mem_bytes`/`cpus`/`network` sont refusées

@@ -74,7 +74,7 @@ struct TrustedFixture {
 fn trusted_fixture(content: &str) -> TrustedFixture {
     let root = tempfile::tempdir().unwrap();
     let trusted_dir = tempfile::tempdir().unwrap();
-    let trusted_file = trusted_dir.path().join("trusted.txt");
+    let trusted_file = trusted_dir.path().join("trusted.toml");
     std::fs::write(&trusted_file, content).unwrap();
     let sha256 = la_console::trusted::sha256_hex(content.as_bytes());
     TrustedFixture {
@@ -101,7 +101,7 @@ fn spawn_console(fx: &TrustedFixture, sha: &str) -> std::process::Child {
 
 #[test]
 fn e2e_trusted_executes_with_valid_checksum() {
-    let fx = trusted_fixture("hello = echo hi-from-trusted\n");
+    let fx = trusted_fixture("[commands.hello]\ncommand = \"echo hi-from-trusted\"\n");
     let mut child = spawn_console(&fx, &fx.sha256);
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
@@ -133,7 +133,7 @@ fn e2e_trusted_executes_with_valid_checksum() {
 
 #[test]
 fn e2e_trusted_denied_on_checksum_mismatch() {
-    let fx = trusted_fixture("hello = echo hi\n");
+    let fx = trusted_fixture("[commands.hello]\ncommand = \"echo hi\"\n");
     let bad_sha = "00".repeat(32);
     let mut child = spawn_console(&fx, &bad_sha);
     let mut stdin = child.stdin.take().unwrap();
@@ -312,8 +312,67 @@ fn e2e_trusted_toml_entry_timeout_overrides_global() {
 }
 
 #[test]
+fn e2e_trusted_txt_extension_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let trusted_dir = tempfile::tempdir().unwrap();
+    let trusted_file = trusted_dir.path().join("trusted.txt");
+    let content = "[commands.hello]\ncommand = \"echo hi\"\n";
+    std::fs::write(&trusted_file, content).unwrap();
+    let sha = la_console::trusted::sha256_hex(content.as_bytes());
+    let output = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(root.path())
+        .arg("--trusted-file")
+        .arg(&trusted_file)
+        .arg("--trusted-sha256")
+        .arg(&sha)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(".toml"), "stderr: {stderr}");
+}
+
+#[test]
+fn e2e_trusted_flags_allowlist() {
+    let fx = trusted_toml_fixture(
+        "[commands.run]\ncommand = \"echo ok\"\ndescription = \"Lance les tests\"\n
+[commands.run.flags]\n\"--watch\" = { description = \"mode watch\" }\n",
+    );
+    let mut child = spawn_console(&fx, &fx.sha256);
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "trusted run --watch"}}"#).unwrap();
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "trusted run --evil"}}"#).unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["stdout"], "ok --watch\n");
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+    let stderr = resp["stderr"].as_str().unwrap();
+    assert!(
+        stderr.contains("--evil") && stderr.contains("not declared"),
+        "stderr: {stderr}"
+    );
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
 fn e2e_trusted_as_pipe_head_pipes_into_whitelist() {
-    let fx = trusted_fixture("lines = printf 'alpha\\nbeta\\ngamma\\n'\n");
+    let fx =
+        trusted_fixture("[commands.lines]\ncommand = \"printf 'alpha\\\\nbeta\\\\ngamma\\\\n'\"\n");
     let mut child = spawn_console(&fx, &fx.sha256);
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
@@ -817,8 +876,8 @@ fn e2e_server_mode_trusted_runs_through_staged_busybox() {
         return;
     };
     let dir = tempfile::tempdir().unwrap();
-    let content = "hello = echo hi-from-busybox\n";
-    std::fs::write(dir.path().join("trusted.txt"), content).unwrap();
+    let content = "[commands.hello]\ncommand = \"echo hi-from-busybox\"\n";
+    std::fs::write(dir.path().join("trusted.toml"), content).unwrap();
     let sha = la_console::trusted::sha256_hex(content.as_bytes());
     let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
         .arg("--root")
@@ -828,7 +887,7 @@ fn e2e_server_mode_trusted_runs_through_staged_busybox() {
         .arg("--sandbox-busybox")
         .arg(&busybox)
         .arg("--trusted-file")
-        .arg("trusted.txt")
+        .arg("trusted.toml")
         .arg("--trusted-sha256")
         .arg(&sha)
         .stdin(Stdio::piped())
@@ -871,8 +930,8 @@ fn e2e_server_mode_denies_trusted() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    let content = "hello = echo hi\n";
-    std::fs::write(dir.path().join("trusted.txt"), content).unwrap();
+    let content = "[commands.hello]\ncommand = \"echo hi\"\n";
+    std::fs::write(dir.path().join("trusted.toml"), content).unwrap();
     let sha = la_console::trusted::sha256_hex(content.as_bytes());
     let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
         .arg("--root")
@@ -880,7 +939,7 @@ fn e2e_server_mode_denies_trusted() {
         .arg("--mode")
         .arg("server")
         .arg("--trusted-file")
-        .arg("trusted.txt")
+        .arg("trusted.toml")
         .arg("--trusted-sha256")
         .arg(&sha)
         .stdin(Stdio::piped())

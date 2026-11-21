@@ -18,7 +18,7 @@ la-console/
         parse.rs      # parser shell cadré : shell-words + opérateurs whitelistés -> arbre de commandes
         resolve.rs    # resolve() : confinement root, unique point de passage
         commands/     # whitelist: cat, ls, echo, grep, sed, sub, http + filtres de flux head/tail/wc/sort/uniq/cut/tr (stream.rs = helpers communs)
-        trusted.rs    # commandes trusted : manifeste TOML v2 (trusted.toml) + format v1 (trusted.txt), checksum sha256, exécution shell réduite (/bin/sh en mode user, busybox sh dans la cage en mode server) ; plus d'ulimit : timeout/kill du groupe de processus par la console
+        trusted.rs    # commandes trusted : manifeste TOML strict (trusted.toml, seul format accepté), checksum sha256, exécution shell réduite (/bin/sh en mode user, busybox sh dans la cage en mode server) ; plus d'ulimit : timeout/kill du groupe de processus par la console
         sandbox.rs    # mode serveur : unshare userns+chroot, staging du binaire/libs, mini-image de cage (busybox + outillage)
         platform.rs   # (prévu v2) couche d'abstraction OS : primitives fs, spawn+limites, backends seatbelt/WSL2/landlock
         sink.rs       # trait Sink + FileSink / CallerSink / PipeSink
@@ -37,7 +37,7 @@ la-console/
 
 - Nommage : crates en kebab-case (`la-console`) ; tout le code, fichiers et
   symboles en anglais.
-- Le fichier `trusted.txt` (et les regex de fichiers sensibles) vit **dans
+- Le fichier `trusted.toml` (et les regex de fichiers sensibles) vit **dans
   chaque dépôt où tourne l'agent**, pas dans la-console : le module
   `trusted.rs` ne gère que le parsing, le wrapping, la sécurité (checksum, scan
   des diffs) et l'exécution — il reçoit le chemin du fichier en argument.
