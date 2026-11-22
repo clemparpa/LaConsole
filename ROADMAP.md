@@ -102,7 +102,8 @@ La v1 est Unix-only (Linux + macOS), documenté.
 - 🚧 **Architecture multi-plateforme** : couche d'abstraction `platform.rs`,
   supprimer le spécifique Linux (`st_dev`/`st_ino` dans `resolve.rs`, `/bin/sh`
   dans `trusted.rs`, `unshare` dans `sandbox.rs`, symlinks des tests)
-  (cf. `spec/platforms.md`).
+  (cf. `spec/platforms.md` ; spec détaillée de la phase 1 — inventaire par OS,
+  API, tests, CI Windows — : `spec/platform.md`).
 - 🚧 **Backends de confinement OS** : macOS = **seatbelt** (`sandbox-exec`, profil
   SBPL généré par entrée), Windows = console dans **WSL2** (VM utilitaire,
   ponts host désactivés sauf déclarés : interop `.exe`, `/mnt/c`, réseau, socket
