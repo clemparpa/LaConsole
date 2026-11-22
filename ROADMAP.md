@@ -99,11 +99,21 @@ La v1 est Unix-only (Linux + macOS), documenté.
   `denied` fail-closed tant qu'aucun backend OS n'existe, et seront appliquées
   par le backend à la fournée suivante (cf. `spec/platforms.md` §4,
   `spec/plugins.md`). `help` liste les entrées avec leurs limites.
-- 🚧 **Architecture multi-plateforme** : couche d'abstraction `platform.rs`,
-  supprimer le spécifique Linux (`st_dev`/`st_ino` dans `resolve.rs`, `/bin/sh`
-  dans `trusted.rs`, `unshare` dans `sandbox.rs`, symlinks des tests)
-  (cf. `spec/platforms.md` ; spec détaillée de la phase 1 — inventaire par OS,
-  API, tests, CI Windows — : `spec/platform.md`).
+- ✅ **Architecture multi-plateforme — phase 1** (cette PR) : couche
+  d'abstraction `platform.rs` (`platform/unix.rs` + `platform/windows.rs`,
+  fonctions libres, fail-closed par défaut) ; branchements `resolve.rs`
+  (`file_id`/`hardlink_escape`/`canonicalize` via `platform`, `normalize()`
+  refuse fail-closed les chemins absolus Windows — drive `C:`, UNC `\\`, tout
+  `:` sur Windows, tout backslash sur unix — et les chemins internes sont
+  normalisés en relatifs `/` (`path_to_slash`) avant `resolve()`), `trusted.rs` (`shell()`, `set_new_process_group`, `kill_process_tree`,
+  `exit_code`, `PATH` via `env::join_paths`), symlinks des tests via
+  `platform::testutil` ; deps `dunce` + `winapi-util` (cible `cfg(windows)`
+  uniquement) ; CI `+ windows-latest` à la matrice `test`. Sur Linux/macOS
+  aucun changement de sémantique ; sur Windows natif, whitelist + `resolve()`
+  fonctionnent et `trusted` (pas de shell), `--mode server` (exit 2) et les
+  limites backend restent refusés fail-closed. `unshare` dans `sandbox.rs`
+  reste volontairement Linux-only (c'est le mode serveur). Spec : `spec/platform.md` ;
+  backends OS (seatbelt/WSL2/landlock) : `spec/platforms.md`.
 - 🚧 **Backends de confinement OS** : macOS = **seatbelt** (`sandbox-exec`, profil
   SBPL généré par entrée), Windows = console dans **WSL2** (VM utilitaire,
   ponts host désactivés sauf déclarés : interop `.exe`, `/mnt/c`, réseau, socket

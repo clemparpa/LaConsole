@@ -24,6 +24,13 @@ namespace non privilégié + chroot (`unshare`), pour un déploiement serveur �
 refusé proprement (exit 2) sur les autres plateformes. La console doit tourner
 comme l'utilisateur propriétaire du `root`.
 
+Sur Windows natif, le binaire compile et tourne en mode **fail-closed** (phase 1
+de [spec/platform.md](../spec/platform.md)) : les commandes whitelist et
+`resolve()` fonctionnent normalement, mais `trusted` (pas de shell), `--mode
+server` (exit 2) et les limites backend de `trusted.toml` y sont refusés. Le
+déploiement Windows visé reste la console lancée dans **WSL2** (voir
+[spec/platforms.md](../spec/platforms.md)).
+
 En mode serveur, la cage peut être équipée d'une mini-image (v2 étape 2) :
 `--sandbox-busybox` (busybox statique, épinglable par sha256) placé en
 `/bin/busybox` avec ses applets, et `--sandbox-tools-dir` (ex. git + go) copié

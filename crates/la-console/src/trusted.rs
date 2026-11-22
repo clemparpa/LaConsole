@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -10,10 +10,8 @@ use sha2::{Digest, Sha256};
 
 use crate::commands::{check_read_path, Ctx, ExecError, RawOutput};
 use crate::parse::{Arg, SimpleCommand};
+use crate::platform;
 use crate::sink::DiskQuota;
-
-const SHELL: &str = "/bin/sh";
-const DEFAULT_PATH_ENV: &str = "/usr/local/bin:/usr/bin:/bin";
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrustedError {
@@ -332,8 +330,8 @@ fn make_home(root: &Path, sandboxed: bool) -> Result<PathBuf, TrustedError> {
     }
     let home = std::env::temp_dir().join(format!("la-console-home-{}", std::process::id()));
     std::fs::create_dir_all(&home)?;
-    let canonical_home = std::fs::canonicalize(&home)?;
-    let canonical_root = std::fs::canonicalize(root)?;
+    let canonical_home = platform::canonicalize(&home)?;
+    let canonical_root = platform::canonicalize(root)?;
     if canonical_home.starts_with(&canonical_root) {
         return Err(TrustedError::HomeInsideRoot);
     }
@@ -423,8 +421,10 @@ fn exec_trusted(
     cage_shell: Option<&str>,
 ) -> Result<RawOutput, ExecError> {
     let script = build_script(&entry.command);
-    // User mode: the host /bin/sh. Server mode: the staged busybox, invoked as
-    // `<busybox> sh -c ...` so the applet interface is explicit.
+    // User mode: the host shell from `platform::shell()` (None on platforms
+    // without one, e.g. Windows native: denied fail-closed). Server mode: the
+    // staged busybox, invoked as `<busybox> sh -c ...` so the applet interface
+    // is explicit.
     let mut command = match cage_shell {
         Some(busybox) => {
             let mut c = Command::new(busybox);
@@ -432,16 +432,17 @@ fn exec_trusted(
             c
         }
         None => {
-            let mut c = Command::new(SHELL);
+            let Some(sh) = platform::shell() else {
+                return Err(ExecError::Denied(
+                    "trusted commands are not available on this platform (no shell)".to_string(),
+                ));
+            };
+            let mut c = Command::new(sh);
             c.arg("-c");
             c
         }
     };
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
+    platform::set_new_process_group(&mut command);
     command
         .arg(&script)
         .arg(format!("trusted-{}", entry.name))
@@ -464,7 +465,7 @@ fn exec_trusted(
             command.env("GOROOT", tools);
         }
     } else {
-        command.env("PATH", DEFAULT_PATH_ENV);
+        command.env("PATH", platform::trusted_path_env());
     }
     let timeout_secs = entry.effective_timeout_secs(ctx);
     run_child(command, cage_shell, timeout_secs)
@@ -497,7 +498,7 @@ fn run_child(
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    kill_process_group(&mut child, cage_shell);
+                    platform::kill_process_tree(&mut child, cage_shell);
                     let _ = child.wait();
                     return Err(ExecError::Limit(format!(
                         "command timed out after {timeout_secs}s"
@@ -506,58 +507,17 @@ fn run_child(
                 std::thread::sleep(Duration::from_millis(20));
             }
             Err(err) => {
-                kill_process_group(&mut child, cage_shell);
+                platform::kill_process_tree(&mut child, cage_shell);
                 return Err(ExecError::Fail(format!("trusted: wait failed: {err}")));
             }
         }
     };
     let (stdout, stderr) = reader.join().unwrap_or_else(|_| (Vec::new(), Vec::new()));
     Ok(RawOutput {
-        code: exit_code(&status),
+        code: platform::exit_code(&status),
         stdout,
         stderr,
     })
-}
-
-/// Kills the child and, on Unix, its whole process group (the child was
-/// spawned with `process_group(0)`, so pgid == child pid). Best-effort via
-/// the same shell used to spawn it; the direct `kill()` always runs.
-fn kill_process_group(child: &mut Child, cage_shell: Option<&str>) {
-    let _ = child.kill();
-    #[cfg(unix)]
-    kill_group_unix(child, cage_shell);
-}
-
-#[cfg(unix)]
-fn kill_group_unix(child: &Child, cage_shell: Option<&str>) {
-    let pgid = i64::from(child.id());
-    let result = match cage_shell {
-        Some(busybox) => Command::new(busybox)
-            .arg("kill")
-            .arg("-KILL")
-            .arg(format!("-{pgid}"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status(),
-        None => Command::new(SHELL)
-            .arg("-c")
-            .arg(format!("kill -KILL -{pgid} 2>/dev/null || true"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status(),
-    };
-    let _ = result;
-}
-
-fn exit_code(status: &std::process::ExitStatus) -> u16 {
-    use std::os::unix::process::ExitStatusExt;
-    status
-        .signal()
-        .map(|s| 128 + s)
-        .or_else(|| status.code())
-        .unwrap_or(1) as u16
 }
 
 #[cfg(test)]
@@ -797,10 +757,9 @@ mod tests {
     /// mimicking `<busybox> sh -c ...` closely enough to test the plumbing.
     #[cfg(unix)]
     fn fake_busybox(dir: &tempfile::TempDir) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let fake = dir.path().join("busybox");
         fs::write(&fake, "#!/bin/sh\nshift\nexec /bin/sh \"$@\"\n").unwrap();
-        fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+        platform::testutil::set_exec_mode(&fake).unwrap();
         fake
     }
 
@@ -850,6 +809,8 @@ mod tests {
         assert!(matches!(err, ExecError::Denied(m) if m.contains("unknown trusted command")));
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_executes_command_and_returns_output() {
         let dir = tempfile::tempdir().unwrap();
@@ -861,6 +822,8 @@ mod tests {
         assert_eq!(out.stdout, "hello-trusted\n");
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_passes_args_literally_without_sub_execution() {
         let dir = tempfile::tempdir().unwrap();
@@ -873,6 +836,8 @@ mod tests {
         assert!(!dir.path().join("pwned").exists());
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_cwd_is_root() {
         let dir = tempfile::tempdir().unwrap();
@@ -883,10 +848,15 @@ mod tests {
         assert_eq!(out.code, 0);
         assert_eq!(
             out.stdout.trim(),
-            fs::canonicalize(dir.path()).unwrap().to_str().unwrap()
+            platform::canonicalize(dir.path())
+                .unwrap()
+                .to_str()
+                .unwrap()
         );
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_env_is_minimal_and_hides_parent_secrets() {
         std::env::set_var("LACONSOLE_TEST_SECRET", "s3cr3t-value");
@@ -900,9 +870,16 @@ mod tests {
         let out = run_cmd(&ctx, "trusted home").unwrap();
         let home = out.stdout.trim().to_string();
         assert!(!home.is_empty());
-        assert!(!home.starts_with(fs::canonicalize(dir.path()).unwrap().to_str().unwrap()));
+        assert!(!home.starts_with(
+            platform::canonicalize(dir.path())
+                .unwrap()
+                .to_str()
+                .unwrap()
+        ));
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_never_feeds_process_stdin_to_the_command() {
         let dir = tempfile::tempdir().unwrap();
@@ -914,6 +891,8 @@ mod tests {
         assert!(out.stdout.is_empty());
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_validates_path_args_through_resolve_and_sensibles() {
         let dir = tempfile::tempdir().unwrap();
@@ -933,6 +912,8 @@ mod tests {
         assert!(matches!(err, ExecError::Denied(_)));
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn flags_must_be_declared_to_be_accepted() {
         let dir = tempfile::tempdir().unwrap();
@@ -952,6 +933,8 @@ mod tests {
         assert!(matches!(err, ExecError::Denied(_)));
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn no_path_check_skips_path_validation_but_not_flag_validation() {
         let dir = tempfile::tempdir().unwrap();
@@ -964,6 +947,8 @@ mod tests {
         assert!(matches!(err, ExecError::Denied(ref m) if m.contains("not declared")));
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_denies_when_file_changed_since_validation() {
         let dir = tempfile::tempdir().unwrap();
@@ -981,6 +966,8 @@ mod tests {
         assert!(matches!(err, ExecError::Denied(m) if m.contains("checksum")));
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_kills_child_on_timeout() {
         let dir = tempfile::tempdir().unwrap();
@@ -1018,6 +1005,8 @@ mod tests {
         );
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn entry_timeout_secs_overrides_global_timeout() {
         let dir = tempfile::tempdir().unwrap();
@@ -1053,6 +1042,8 @@ mod tests {
         assert_eq!(command_timeout_secs(&cmd, &ctx), 30);
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn toml_checksum_is_verified_before_every_execution() {
         let dir = tempfile::tempdir().unwrap();
@@ -1102,6 +1093,8 @@ mod tests {
         );
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn trusted_as_pipe_head_feeds_whitelist_commands() {
         let dir = tempfile::tempdir().unwrap();
@@ -1116,6 +1109,8 @@ mod tests {
         assert_eq!(out.stdout, "");
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn trusted_pipe_head_output_redirects_through_file_sink() {
         let dir = tempfile::tempdir().unwrap();
@@ -1131,6 +1126,8 @@ mod tests {
         );
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn pipe_head_trusted_still_verifies_checksum() {
         let dir = tempfile::tempdir().unwrap();
@@ -1148,6 +1145,8 @@ mod tests {
         assert!(matches!(err, ExecError::Denied(m) if m.contains("checksum")));
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_propagates_nonzero_exit_code() {
         let dir = tempfile::tempdir().unwrap();

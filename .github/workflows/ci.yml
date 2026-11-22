@@ -37,6 +37,10 @@ jobs:
           toolchain: stable
           components: clippy
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Windows compilation is checked for real by the windows-latest leg of
+      # the `test` matrix below (spec/platform.md §7); a ubuntu cross-check is
+      # not possible because ring (via reqwest/rustls) needs a Windows C
+      # toolchain that hosted ubuntu runners do not have.
 
   test:
     name: test (${{ matrix.os }})
@@ -44,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

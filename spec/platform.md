@@ -1,6 +1,6 @@
 # Couche d'abstraction plateforme — `platform.rs` (phase 1)
 
-> Statut : **spécifiée, à implémenter** (une PR). C'est la phase 1 de
+> Statut : **✅ implémentée (phase 1)**. C'est la phase 1 de
 > [platforms.md](platforms.md) §5 : **primitives OS uniquement, aucun backend de
 > confinement** (pas de seatbelt, pas de WSL2, pas de landlock dans cette PR).
 > Principes inchangés : fail-closed, `#![forbid(unsafe_code)]` intact, la console
@@ -31,9 +31,9 @@ plugins, commandes `git` whitelist.
 
 | # | Point | Aujourd'hui (unix-only) | Abstraction `platform.rs` | Linux / macOS | Windows natif |
 |---|---|---|---|---|---|
-| 1 | Identité fichier (dev/ino) | `std::os::unix::fs::MetadataExt` (`dev()`, `nlink()`) — `resolve.rs:2,98-106` | `FileId { dev, ino }`, `file_id(&Metadata) -> Option<FileId>`, `hardlink_escape(root_meta, meta) -> bool` | `MetadataExt` (std) | `same-file::Handle` (volume serial + file index) |
+| 1 | Identité fichier (dev/ino) | `std::os::unix::fs::MetadataExt` (`dev()`, `nlink()`) — `resolve.rs:2,98-106` | `FileId { dev, ino }`, `file_id(&Metadata) -> Option<FileId>`, `file_id_of_path(&Path)`, `hardlink_escape(root, target) -> bool` | `MetadataExt` (std) | `winapi-util` (`GetFileInformationByHandle` : volume serial + file index + `nNumberOfLinks`) |
 | 2 | `canonicalize` verbatim `\\?\` | `fs::canonicalize` | `canonicalize(&Path) -> io::Result<PathBuf>` | `std::fs::canonicalize` | `dunce::canonicalize` |
-| 3 | Composants Windows (`C:`, `\`) | `normalize()` ignore `Component::Prefix` — `resolve.rs:52-66` | `looks_like_windows_path(&str) -> bool` ; `normalize()` rejette fail-closed | idem + rejet des backslashes | idem |
+| 3 | Composants Windows (`C:`, `\`) | `normalize()` ignore `Component::Prefix` — `resolve.rs:52-66` | `looks_like_windows_path(&str) -> bool` ; `normalize()` rejette fail-closed | rejet de tout `\` (jamais un séparateur sur unix) + des `C:` | rejet de tout `:` (drive `C:…` + NTFS ADS `file:stream`) et des préfixes UNC `\\…` ; les relatifs natifs `src\a.rs` restent valides |
 | 4 | Comparaison de chemins / casse | `starts_with` byte-à-byte | comparer uniquement des chemins passés par `platform::canonicalize` (casse réelle du disque) | inchangé | idem via `dunce` |
 | 5 | Shell trusted | `SHELL = "/bin/sh"` — `trusted.rs:15` | `shell() -> Option<&'static str>` | `Some("/bin/sh")` (cage : busybox, inchangé) | `None` → `trusted` denied |
 | 6 | Env minimal / `PATH` (`:` vs `;`) | `DEFAULT_PATH_ENV` en dur — `trusted.rs:16` | `default_path_entries() -> Vec<PathBuf>` + `env::join_paths` | idem | chemins Windows, `;` géré par std |
@@ -47,18 +47,27 @@ plugins, commandes `git` whitelist.
 Notes :
 
 - `std::os::windows::fs::MetadataExt::{volume_serial_number, file_index}` existe
-  mais est **nightly-only** (feature `windows_by_handle`) → d'où `same-file`.
-- Sémantique hardlink dégradée sur Windows : pas de link count portable ; on
-  refuse si le volume diffère de celui du root, et le résiduel (hardlink même
-  volume pointant hors du root, indétectable) est documenté dans
-  [security.md](security.md). Fail-closed avant tout.
+  mais est **nightly-only** (feature `windows_by_handle`), et `same-file` 1.x
+  n'expose `dev()`/`ino()` que sur unix → d'où `winapi-util` (déjà transitif via
+  `same-file`, 0 nouveau transitif) qui lit volume serial + file index +
+  `nNumberOfLinks` via `GetFileInformationByHandle`. `file_id(&Metadata)`
+  retourne `None` sur Windows ; on passe par `file_id_of_path`.
+- Chemins internes : tout chemin interne (résultats du walker/globs) est
+  normalisé en relatif avec séparateurs `/` (`platform::path_to_slash`) avant
+  de repartir dans `resolve()` — ainsi un root absolu `C:\...` ne fait jamais
+  passer un chemin interne par le rejet fail-closed réservé à l'input.
+- Sémantique hardlink sur Windows : on refuse si le volume diffère de celui du
+  root **ou** si `nNumberOfLinks > 1` (le link count existe bien sur Windows via
+  `GetFileInformationByHandle`). Résiduel : sur ReFS l'index de fichier 64 bits
+  n'est pas garanti unique (même caveat que `same-file`), documenté dans
+  [security.md](security.md). Fail-closed avant tout : identité illisible = refus.
 
 ## 3. Dépendances
 
 | Crate | Rôle | Coût | Licence (allow-list `deny.toml`) |
 |---|---|---|---|
-| `same-file` 1.0.6 | `FileId` sur Windows | **déjà dans `Cargo.lock`** (transitif via `ignore`/`walkdir`) → 0 nouveau transitif | MIT/Unlicense ✅ |
-| `dunce` | `canonicalize` sans préfixe `\\?\` sur Windows | 1 crate, 0 dépendance | CC0/MIT-0/Apache-2.0 ✅ |
+| `winapi-util` 0.1 | `FileId` + link count sur Windows (`GetFileInformationByHandle`) | **déjà dans `Cargo.lock`** (transitif via `same-file`) → 0 nouveau transitif ; dep cible `cfg(windows)` | Unlicense/MIT ✅ |
+| `dunce` | `canonicalize` sans préfixe `\\?\` sur Windows | 1 crate, 0 dépendance ; dep cible `cfg(windows)` | CC0/MIT-0/Apache-2.0 ✅ |
 
 Le reste est en `std` (`std::os::{unix,windows}`, `env::join_paths`, `process`) ou
 en spawn de binaires (`taskkill`) — cohérent avec « zéro FFI/`unsafe` chez nous ».
@@ -113,7 +122,7 @@ pub fn exit_code(status: &std::process::ExitStatus) -> u16;
   tourne sur ubuntu + macOS + Windows.
 - **Unit/e2e `cfg(unix)`** : identité fichier réelle, kill du groupe de processus
   (test existant `timeout_kills_the_whole_process_group`), symlinks → ubuntu + macOS.
-- **Unit/e2e `cfg(windows)`** : `file_id` via `same-file`, `canonicalize` sans
+- **Unit/e2e `cfg(windows)`** : `file_id_of_path` via `winapi-util`, `canonicalize` sans
   préfixe verbatim, `taskkill_args` → runner `windows-latest`. Sur les runners
   GitHub `windows-latest` le Developer Mode est actif : les symlinks de test
   fonctionnent ; si la création échoue (permission), le test **skippe**
@@ -145,7 +154,7 @@ Une seule PR, testable, CI verte sur les 3 OS :
 
 1. `platform.rs` + `platform/unix.rs` + `platform/windows.rs` + `testutil` ;
 2. branchements `resolve.rs` / `trusted.rs` / tests (tableau §5) ;
-3. `Cargo.toml` : `+ same-file`, `+ dunce` (`cargo deny` / `cargo audit` restent verts) ;
+3. `Cargo.toml` : `+ dunce`, `+ winapi-util` en `[target.'cfg(windows)'.dependencies]` (`cargo deny` / `cargo audit` restent verts) ;
 4. `ci.yml` : matrice `+ windows-latest` ;
 5. docs : cette spec + sommaire `spec/README.md` + `structure.md` + `ROADMAP.md`.
 

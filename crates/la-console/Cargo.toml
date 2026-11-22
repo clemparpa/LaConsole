@@ -22,3 +22,11 @@ wax = "0.7"
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"
+
+# OS abstraction layer (spec/platform.md): only used by the cfg(windows) code.
+# winapi-util (already transitive via same-file) reads volume serial + file
+# index + link count via GetFileInformationByHandle — same-file 1.x only
+# exposes dev()/ino() on unix.
+[target.'cfg(windows)'.dependencies]
+dunce = "1"
+winapi-util = "0.1"

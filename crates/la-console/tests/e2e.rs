@@ -99,6 +99,8 @@ fn spawn_console(fx: &TrustedFixture, sha: &str) -> std::process::Child {
         .unwrap()
 }
 
+// Spawns a real shell: unix-only (denied fail-closed on Windows native).
+#[cfg(unix)]
 #[test]
 fn e2e_trusted_executes_with_valid_checksum() {
     let fx = trusted_fixture("[commands.hello]\ncommand = \"echo hi-from-trusted\"\n");
@@ -194,6 +196,8 @@ fn trusted_toml_fixture(content: &str) -> TrustedFixture {
     }
 }
 
+// Spawns a real shell: unix-only (denied fail-closed on Windows native).
+#[cfg(unix)]
 #[test]
 fn e2e_trusted_toml_executes_with_valid_checksum() {
     let fx = trusted_toml_fixture("[commands.hello]\ncommand = \"echo hi-from-toml\"\n");
@@ -272,6 +276,8 @@ fn e2e_trusted_toml_backend_limit_denied_without_backend() {
     assert!(child.wait().unwrap().success());
 }
 
+// Spawns a real shell: unix-only (denied fail-closed on Windows native).
+#[cfg(unix)]
 #[test]
 fn e2e_trusted_toml_entry_timeout_overrides_global() {
     let fx = trusted_toml_fixture("[commands.slow]\ncommand = \"sleep 30\"\ntimeout_secs = 1\n");
@@ -333,6 +339,8 @@ fn e2e_trusted_txt_extension_is_refused() {
     assert!(stderr.contains(".toml"), "stderr: {stderr}");
 }
 
+// Spawns a real shell: unix-only (denied fail-closed on Windows native).
+#[cfg(unix)]
 #[test]
 fn e2e_trusted_flags_allowlist() {
     let fx = trusted_toml_fixture(
@@ -369,6 +377,8 @@ fn e2e_trusted_flags_allowlist() {
     assert!(child.wait().unwrap().success());
 }
 
+// Spawns a real shell: unix-only (denied fail-closed on Windows native).
+#[cfg(unix)]
 #[test]
 fn e2e_trusted_as_pipe_head_pipes_into_whitelist() {
     let fx =
@@ -1097,6 +1107,91 @@ fn e2e_json_extractor_on_pipe_and_files() {
     let resp = next();
     assert_eq!(resp["ok"], false);
     assert_eq!(resp["kind"], "denied");
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+/// Windows-style paths are refused fail-closed on every OS, not only on
+/// Windows (spec/platform.md). Quoted so the shell tokenizer keeps the
+/// backslash verbatim up to `resolve()`.
+#[test]
+fn e2e_refuses_windows_style_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "cat 'C:\\foo'"}}"#).unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+/// On unix a backslash in a quoted path is refused fail-closed (on Windows it
+/// is the native separator and stays valid for relative paths).
+#[cfg(unix)]
+#[test]
+fn e2e_refuses_backslash_paths_on_unix() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "cat 'a\\b'"}}"#).unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+/// Windows native, phase 1 (spec/platform.md §1): no shell available, so
+/// `trusted` is denied fail-closed even with a valid manifest + checksum.
+#[cfg(windows)]
+#[test]
+fn e2e_trusted_is_denied_without_shell_on_windows() {
+    let fx = trusted_fixture("[commands.hello]\ncommand = \"echo hi\"\n");
+    let mut child = spawn_console(&fx, &fx.sha256);
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "trusted hello"}}"#).unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+    assert!(resp["stderr"].as_str().unwrap().contains("no shell"));
 
     drop(stdin);
     assert!(child.wait().unwrap().success());
