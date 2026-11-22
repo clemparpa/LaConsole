@@ -25,6 +25,10 @@ serveur Linux (v2 étape 1) en est la preuve de concept :
 
 ## 2. Couche d'abstraction plateforme (`platform.rs`, prévu)
 
+> La spécification détaillée de la **phase 1** (inventaire par OS, API de
+> `platform.rs`, mapping du code existant, stratégie de tests, CI Windows,
+> fail-closed sur Windows natif) est dans [platform.md](platform.md).
+
 Un seul module connaît l'OS ; le reste du code passe par des traits :
 
 - `fs_primitives` : canonicalize (std), détection des hardlinks hors root

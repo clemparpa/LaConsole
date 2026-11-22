@@ -20,7 +20,7 @@ la-console/
         commands/     # whitelist: cat, ls, echo, grep, sed, sub, http + filtres de flux head/tail/wc/sort/uniq/cut/tr (stream.rs = helpers communs)
         trusted.rs    # commandes trusted : manifeste TOML strict (trusted.toml, seul format accepté), checksum sha256, exécution shell réduite (/bin/sh en mode user, busybox sh dans la cage en mode server) ; plus d'ulimit : timeout/kill du groupe de processus par la console
         sandbox.rs    # mode serveur : unshare userns+chroot, staging du binaire/libs, mini-image de cage (busybox + outillage)
-        platform.rs   # (prévu v2) couche d'abstraction OS : primitives fs, spawn+limites, backends seatbelt/WSL2/landlock
+        platform.rs   # couche d'abstraction OS (spec/platform.md) : primitives fs (identité fichier, canonicalize), spawn + kill de l'arbre, exit code, shell — impls cfg(unix)/cfg(windows), fail-closed sur Windows natif ; backends seatbelt/WSL2/landlock prévus v2 (spec/platforms.md)
         sink.rs       # trait Sink + FileSink / CallerSink / PipeSink
       tests/
         evasion.rs    # tests d'évasion (.., symlinks, absolus, unicode...)
@@ -54,6 +54,8 @@ la-console/
 | Regex des fichiers sensibles | `regex` (temps linéaire, pas de ReDoS) |
 | Limites du sous-processus trusted | ✅ `ulimit` retiré ; timeout/kill du groupe de processus par la console (std, pas d'`unsafe`) ; limites par entrée TOML (`max_write_bytes`/`mem_bytes`/`cpus`/`network`) en attente du backend OS (seatbelt/landlock/WSL2), refusées fail-closed entre-temps |
 | Manifeste TOML `trusted.toml` | `toml` (épinglé en direct) |
+| Identité de fichier cross-OS (dev/ino ; volume+file index sur Windows) — prévu v2 `platform.rs` | `same-file` (déjà transitif via `ignore`, épinglé en direct) |
+| `canonicalize` sans préfixe `\\?\` sur Windows — prévu v2 `platform.rs` | `dunce` |
 | `git` whitelist read-only (prévu v2) | `git2` (à auditer : `libgit2-sys` natif, toolchain C requise) |
 | Erreurs typées | `thiserror` |
 | CLI | `clap` |
