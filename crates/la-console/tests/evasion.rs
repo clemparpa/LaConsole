@@ -199,6 +199,16 @@ fn allows_unicode_path() {
 #[test]
 fn dotdot_like_names_are_literal() {
     let dir = root();
+    let resolved = resolve(dir.path(), "..x//").unwrap();
+    assert!(resolved.ends_with("..x"));
+}
+
+/// Win32 tronque les points/espaces de fin de nom ("...." devient ""), donc ce
+/// cas n'existe pas tel quel sur Windows : unix-only.
+#[cfg(unix)]
+#[test]
+fn trailing_dots_name_is_literal_on_unix() {
+    let dir = root();
     let resolved = resolve(dir.path(), "....//").unwrap();
     assert!(resolved.ends_with("...."));
 }
