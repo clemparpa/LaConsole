@@ -1576,11 +1576,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("secret.txt"), "TOPSECRET\n").unwrap();
-        std::os::unix::fs::symlink(
-            outside.path().join("secret.txt"),
-            dir.path().join("link.txt"),
-        )
-        .unwrap();
+        if !crate::platform::testutil::symlink_or_skip(
+            &outside.path().join("secret.txt"),
+            &dir.path().join("link.txt"),
+        ) {
+            return;
+        }
         fs::write(dir.path().join("inside.txt"), "hit\n").unwrap();
         let out = run_cmd(&dir, "grep --include=** TOPSECRET .").unwrap();
         assert_eq!(out.code, 1);
@@ -1733,8 +1734,12 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let outside = tempfile::tempdir().unwrap();
             fs::write(outside.path().join("secret.txt"), "LEAKME\n").unwrap();
-            std::os::unix::fs::symlink(outside.path().join("secret.txt"), dir.path().join("link"))
-                .unwrap();
+            if !crate::platform::testutil::symlink_or_skip(
+                &outside.path().join("secret.txt"),
+                &dir.path().join("link"),
+            ) {
+                return Ok(());
+            }
             fs::write(dir.path().join("inside.txt"), "hit\n").unwrap();
             let mut cmd = String::from("grep");
             for g in &globs {

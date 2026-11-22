@@ -1101,3 +1101,61 @@ fn e2e_json_extractor_on_pipe_and_files() {
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }
+
+/// Windows-style paths are refused fail-closed on every OS, not only on
+/// Windows (spec/platform.md). Quoted so the shell tokenizer keeps the
+/// backslash verbatim up to `resolve()`.
+#[test]
+fn e2e_refuses_windows_style_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "cat 'C:\\foo'"}}"#).unwrap();
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "cat 'a\\b'"}}"#).unwrap();
+    stdin.flush().unwrap();
+
+    for _ in 0..2 {
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["ok"], false);
+        assert_eq!(resp["code"], 2);
+        assert_eq!(resp["kind"], "denied");
+    }
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+/// Windows native, phase 1 (spec/platform.md §1): no shell available, so
+/// `trusted` is denied fail-closed even with a valid manifest + checksum.
+#[cfg(windows)]
+#[test]
+fn e2e_trusted_is_denied_without_shell_on_windows() {
+    let fx = trusted_fixture("[commands.hello]\ncommand = \"echo hi\"\n");
+    let mut child = spawn_console(&fx, &fx.sha256);
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, r#"{{"op": "exec", "cmd": "trusted hello"}}"#).unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], false);
+    assert_eq!(resp["code"], 2);
+    assert_eq!(resp["kind"], "denied");
+    assert!(resp["stderr"].as_str().unwrap().contains("no shell"));
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}

@@ -1,6 +1,7 @@
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
+
+use crate::platform;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Denied {
@@ -10,6 +11,8 @@ pub enum Denied {
     ParentDirEscape,
     #[error("path contains NUL byte")]
     NulByte,
+    #[error("windows-style path refused (drive letter, backslash or UNC prefix)")]
+    WindowsPath,
     #[error("symlink resolves outside root")]
     SymlinkEscape,
     #[error("hardlink or foreign device outside root")]
@@ -26,7 +29,7 @@ pub struct Resolver {
 impl Resolver {
     pub fn new(root: &Path) -> Result<Self, Denied> {
         Ok(Self {
-            root: fs::canonicalize(root)?,
+            root: platform::canonicalize(root)?,
         })
     }
 
@@ -50,11 +53,17 @@ fn normalize(input: &str) -> Result<PathBuf, Denied> {
     if input.contains('\0') {
         return Err(Denied::NulByte);
     }
+    // Fail-closed on every OS: a Windows-style path (drive letter, backslash,
+    // UNC/verbatim prefix) is never a valid input for the confinement.
+    if platform::looks_like_windows_path(input) {
+        return Err(Denied::WindowsPath);
+    }
     let mut normalized = PathBuf::new();
     for component in Path::new(input).components() {
         match component {
             Component::ParentDir => return Err(Denied::ParentDirEscape),
-            Component::CurDir | Component::Prefix(_) => {}
+            Component::CurDir => {}
+            Component::Prefix(_) => return Err(Denied::WindowsPath),
             Component::RootDir => normalized.push(component.as_os_str()),
             Component::Normal(seg) => normalized.push(seg),
         }
@@ -75,7 +84,7 @@ fn canonical_within(root: &Path, raw: &Path) -> Result<PathBuf, Denied> {
             _ => break,
         }
     }
-    let canonical_probe = fs::canonicalize(&probe)?;
+    let canonical_probe = platform::canonicalize(&probe)?;
     let remainder = joined
         .strip_prefix(&probe)
         .unwrap_or_else(|_| Path::new(""));
@@ -95,14 +104,8 @@ fn canonical_within(root: &Path, raw: &Path) -> Result<PathBuf, Denied> {
 }
 
 fn check_hardlink(root: &Path, target: &Path) -> Result<(), Denied> {
-    if let Ok(meta) = fs::symlink_metadata(target) {
-        let root_meta = fs::metadata(root)?;
-        if meta.dev() != root_meta.dev() {
-            return Err(Denied::HardlinkEscape);
-        }
-        if meta.is_file() && meta.nlink() > 1 {
-            return Err(Denied::HardlinkEscape);
-        }
+    if fs::symlink_metadata(target).is_ok() && platform::hardlink_escape(root, target) {
+        return Err(Denied::HardlinkEscape);
     }
     Ok(())
 }
@@ -136,9 +139,24 @@ mod tests {
     }
 
     #[test]
+    fn normalize_rejects_windows_style_paths_fail_closed() {
+        for bad in [
+            "C:\\foo",
+            "C:/foo",
+            "c:foo",
+            "a\\b",
+            "\\\\server\\share",
+            "\\\\?\\C:\\x",
+            "a:b",
+        ] {
+            assert!(matches!(normalize(bad), Err(Denied::WindowsPath)), "{bad}");
+        }
+    }
+
+    #[test]
     fn canonical_within_rejects_absolute_outside_root() {
         let dir = tempfile::tempdir().unwrap();
-        let resolver_root = fs::canonicalize(dir.path()).unwrap();
+        let resolver_root = platform::canonicalize(dir.path()).unwrap();
         assert!(matches!(
             canonical_within(&resolver_root, Path::new("/etc/passwd")),
             Err(Denied::AbsoluteOutsideRoot)
@@ -151,7 +169,7 @@ mod tests {
         fs::write(dir.path().join("ok.txt"), b"ok").unwrap();
         let link_parent = tempfile::tempdir().unwrap();
         let link = link_parent.path().join("rootlink");
-        std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+        assert!(platform::testutil::symlink_or_skip(dir.path(), &link));
         let resolver = Resolver::new(&link).unwrap();
         let resolved = resolver
             .resolve(link.join("ok.txt").to_str().unwrap())

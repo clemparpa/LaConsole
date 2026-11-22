@@ -21,7 +21,14 @@ sur disque, et empêcher qu'une sortie contamine l'interprétation côté appela
     proche, puis vérification que le résultat reste préfixe du root canonique) ;
   - rejette les hardlinks pointant hors du root (vérification via
     `st_dev`/`st_ino`, ou en refusant la création de liens et en ne suivant les
-    liens existants qu'après canonicalisation).
+    liens existants qu'après canonicalisation) ;
+  - rejette fail-closed les chemins de style Windows (`C:\…`, backslash,
+    préfixe UNC `\\…`) sur **toutes** les plateformes
+    (`platform::looks_like_windows_path`, cf. `spec/platform.md`) ;
+  - identité de fichier cross-OS via `platform.rs` : unix `st_dev`/`st_ino`/`nlink`,
+    Windows volume serial + file index + `nNumberOfLinks` (`winapi-util` via
+    `GetFileInformationByHandle`) — résiduel Windows : sur ReFS l'index de fichier
+    64 bits n'est pas garanti unique.
 - Règle d'or : **jamais de `Path::join` direct sur l'input utilisateur** sans
   passer par `resolve`. Aucune exception.
 

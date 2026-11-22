@@ -3,6 +3,7 @@
 pub mod commands;
 pub mod console;
 pub mod parse;
+pub mod platform;
 pub mod resolve;
 pub mod sandbox;
 pub mod sink;

@@ -54,8 +54,8 @@ la-console/
 | Regex des fichiers sensibles | `regex` (temps linéaire, pas de ReDoS) |
 | Limites du sous-processus trusted | ✅ `ulimit` retiré ; timeout/kill du groupe de processus par la console (std, pas d'`unsafe`) ; limites par entrée TOML (`max_write_bytes`/`mem_bytes`/`cpus`/`network`) en attente du backend OS (seatbelt/landlock/WSL2), refusées fail-closed entre-temps |
 | Manifeste TOML `trusted.toml` | `toml` (épinglé en direct) |
-| Identité de fichier cross-OS (dev/ino ; volume+file index sur Windows) — prévu v2 `platform.rs` | `same-file` (déjà transitif via `ignore`, épinglé en direct) |
-| `canonicalize` sans préfixe `\\?\` sur Windows — prévu v2 `platform.rs` | `dunce` |
+| Identité de fichier cross-OS (dev/ino ; volume serial + file index + link count sur Windows) — v2 `platform.rs` ✅ | `winapi-util` (déjà transitif via `same-file`, dep cible `cfg(windows)`) |
+| `canonicalize` sans préfixe `\\?\` sur Windows — v2 `platform.rs` ✅ | `dunce` (dep cible `cfg(windows)`) |
 | `git` whitelist read-only (prévu v2) | `git2` (à auditer : `libgit2-sys` natif, toolchain C requise) |
 | Erreurs typées | `thiserror` |
 | CLI | `clap` |

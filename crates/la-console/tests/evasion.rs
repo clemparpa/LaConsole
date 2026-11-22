@@ -1,6 +1,7 @@
+use la_console::platform;
+use la_console::platform::testutil::symlink_or_skip;
 use la_console::resolve::{resolve, Denied};
 use std::fs;
-use std::os::unix::fs::symlink;
 
 fn root() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -10,7 +11,7 @@ fn root() -> tempfile::TempDir {
 }
 
 fn canonical_root(dir: &tempfile::TempDir) -> std::path::PathBuf {
-    fs::canonicalize(dir.path()).unwrap()
+    platform::canonicalize(dir.path()).unwrap()
 }
 
 #[test]
@@ -43,6 +44,27 @@ fn denies_absolute_outside_root() {
     ));
 }
 
+/// Windows-style paths (drive letter, backslash, UNC/verbatim prefix) are
+/// refused fail-closed on every OS, not only on Windows.
+#[test]
+fn denies_windows_style_paths() {
+    let dir = root();
+    for bad in [
+        "C:\\foo",
+        "C:/foo",
+        "c:foo",
+        "a\\b",
+        "\\\\server\\share",
+        "\\\\?\\C:\\x",
+        "a:b",
+    ] {
+        assert!(
+            matches!(resolve(dir.path(), bad), Err(Denied::WindowsPath)),
+            "{bad}"
+        );
+    }
+}
+
 #[test]
 fn allows_absolute_inside_root() {
     let dir = root();
@@ -56,7 +78,9 @@ fn allows_root_passed_via_symlink() {
     let dir = root();
     let link_parent = tempfile::tempdir().unwrap();
     let link = link_parent.path().join("rootlink");
-    symlink(dir.path(), &link).unwrap();
+    if !symlink_or_skip(dir.path(), &link) {
+        return;
+    }
     let resolved = resolve(&link, "sub/ok.txt").unwrap();
     assert!(resolved.starts_with(canonical_root(&dir)));
     let abs = link.join("sub/ok.txt");
@@ -69,11 +93,12 @@ fn denies_symlink_escape() {
     let dir = root();
     let outside = tempfile::tempdir().unwrap();
     fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
-    symlink(
-        outside.path().join("secret.txt"),
-        dir.path().join("link.txt"),
-    )
-    .unwrap();
+    if !symlink_or_skip(
+        &outside.path().join("secret.txt"),
+        &dir.path().join("link.txt"),
+    ) {
+        return;
+    }
     assert!(matches!(
         resolve(dir.path(), "link.txt"),
         Err(Denied::SymlinkEscape)
@@ -84,13 +109,18 @@ fn denies_symlink_escape() {
 fn denies_symlink_dir_escape() {
     let dir = root();
     let outside = tempfile::tempdir().unwrap();
-    symlink(outside.path(), dir.path().join("linkdir")).unwrap();
+    if !symlink_or_skip(outside.path(), &dir.path().join("linkdir")) {
+        return;
+    }
     assert!(matches!(
         resolve(dir.path(), "linkdir/anything"),
         Err(Denied::SymlinkEscape)
     ));
 }
 
+// Hardlink detection via the link count (`nlink`) is unix-only; on Windows
+// a same-volume hardlink is undetectable (documented in spec/security.md).
+#[cfg(unix)]
 #[test]
 fn denies_hardlink_escape() {
     let dir = root();
@@ -143,7 +173,7 @@ mod proptests {
         fn never_escapes_root(input in any::<String>()) {
             let dir = root();
             if let Ok(resolved) = resolve(dir.path(), &input) {
-                let canonical_root = fs::canonicalize(dir.path()).unwrap();
+                let canonical_root = platform::canonicalize(dir.path()).unwrap();
                 prop_assert!(resolved.starts_with(&canonical_root));
             }
         }
