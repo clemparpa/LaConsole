@@ -20,7 +20,7 @@ Deux familles de commandes :
    (`#![forbid(unsafe_code)]`), confinées par `resolve()` + sensibles + sinks +
    bornes ;
 2. **Commandes autorisées par l'utilisateur**, inscrites dans le repo de l'agent
-   (revue humaine en PR, épinglées sha256 comme `trusted.txt`), et **composables
+   (revue humaine en PR, épinglées sha256 comme `trusted.toml`), et **composables
    avec les commandes de base** — ex. `trusted run-tests | grep ERROR` pour lire
    des logs illisibles. `trusted` existe (v1) avec `;`/`&&` ; **le pipe
    `trusted → whitelist` est livré 🚧 (cette PR, tête de pipe uniquement,
@@ -76,36 +76,54 @@ d'args **par sous-commande** :
   mismatch = `denied`, aucune exécution ;
 - manifeste **hors du root** : l'agent ne peut pas le modifier.
 
-## Manifeste TOML des commandes trusted (`trusted.toml`, v2)
+## Manifeste TOML des commandes trusted (`trusted.toml`, v2) — ✅ livré
 
-Remplace le format ligne `trusted.txt` (v1) par un **TOML strict**, toujours
-épinglé par `--trusted-sha256` et re-vérifié avant **chaque** exécution :
+Format **TOML strict**, toujours épinglé par `--trusted-sha256` et re-vérifié
+avant **chaque** exécution. Détection par extension : `.toml` uniquement —
+le format v1 `trusted.txt` a été retiré, toute autre extension = refus
+fail-closed.
+
+> Statut : `command`, `no_path_check` et `timeout_secs` sont appliqués par la
+> console dès maintenant (timeout wall-clock + kill du groupe de processus).
+> `max_write_bytes` / `mem_bytes` / `cpus` / `network` sont validés au parse
+> mais **refusés `denied` à l'exécution tant qu'aucun backend OS n'est
+> disponible** (fail-closed, cf. [platforms.md](platforms.md) §4) ; pendant la
+> migration, `network` non déclaré = comportement v1 (réseau joignable), et
+> le défaut `none` sera appliqué dès l'arrivée des backends.
 
 ```toml
 # trusted.toml — revu en PR par l'humain, hors du root de l'agent
 [commands.build]
 command = "cargo build --release"
+description = "Compile le projet en release"
+
+[commands.build.flags]
+"--locked" = { description = "Utilise le Cargo.lock figé" }
+"-j" = {}
 
 [commands.test-e2e]
 command = "npm run test:e2e"
-no_path_check = false                 # flag optionnel (défaut false)
+no_path_check = false                 # optionnel (défaut false)
 timeout_secs = 600                    # optionnel, défaut = --timeout-secs global
-max_write_bytes = 256 * 1024 * 1024   # quota d'écriture disque de la commande
-mem_bytes = 4 * 1024 * 1024 * 1024    # optionnel, appliqué par le backend OS
+max_write_bytes = 268435456           # quota d'écriture disque de la commande
+mem_bytes = 4294967296                # optionnel, appliqué par le backend OS
 network = "none"                      # none (défaut) | loopback | proxy (allowlist de domaines)
 ```
 
 | Champ | Règle |
 |---|---|
 | `command` | obligatoire ; passé tel quel au shell du backend, complété par `"$@"` (args jamais réinterprétés) |
+| `description` | texte libre rendu par `help` (recommandé pour la revue humaine) |
+| `flags` | table `"<flag>" = { description = "..." }` : allowlist des arguments `-...` acceptés (`-v`, `--release`, `--jobs=4` ; nom validé `^-{1,2}[A-Za-z0-9][A-Za-z0-9_-]*(=...)?$`) ; tout `-...` non déclaré = `denied` fail-closed, même avec `no_path_check` ; les flags ne passent pas par `resolve()` |
 | `no_path_check` | bool, défaut `false` ; sinon les args-chemins passent par `resolve()` + sensibles |
 | `timeout_secs` | défaut = limite globale ; kill du processus (et du groupe) à la deadline |
 | `max_write_bytes` | **quantité d'écriture disque** de la commande, appliquée par le backend OS (FS deny hors répertoires déclarés) |
 | `mem_bytes`, `cpus` | appliqués par le backend OS (seatbelt/landlock/WSL2) — **plus par `ulimit`** (voir [platforms.md](platforms.md) §4) |
 | `network` | `none` = deny réseau ; `loopback` ; `proxy` = proxy localhost + allowlist de domaines |
 
-- Schéma strict (`deny_unknown_fields`, crate TOML épinglée, fail-closed) ;
-  nom `^[A-Za-z_][A-Za-z0-9_-]*$`, doublon = refus total.
+- Schéma strict (`deny_unknown_fields`, crate `toml` épinglée en direct,
+  fail-closed) ; nom `^[A-Za-z_][A-Za-z0-9_-]*$`, doublon = refus total (le
+  parseur TOML refuse déjà les tables dupliquées).
 - Détection par extension : `.toml` = v2 ; `.txt` = format v1 (compat lecture
   le temps de la migration).
 - `help` liste les entrées avec leurs limites.
@@ -132,7 +150,7 @@ le confinement **dans l'enfant juste avant exec** — jamais dans le harness
 - crate `nono` (Apache-2.0) comme alternative cross-platform unique dans le
   helper, à auditer/épingler une fois (0.x).
 
-**Décision v2 : les `ulimit` du shell trusted sont retirés** (non portables —
+**✅ Décision v2 livrée : les `ulimit` du shell trusted sont retirés** (non portables —
 `ulimit -v` absent sur macOS — et `-v` borne l'address space virtuel, pas la
 RSS réelle). Les limites par entrée du manifeste TOML (`timeout_secs`,
 `max_write_bytes`, `mem_bytes`, `cpus`, `network`) sont appliquées par le
@@ -163,8 +181,11 @@ masquage — jamais délégué au harnais, fail-closed même si le harnais ment.
 3. `sandbox.rs` (helper arg0, backends Seatbelt/Landlock, fail-closed) puis
    `plugins.rs` (manifeste JSON strict, spawn sandboxé) ; `help` liste les
    plugins déclarés ;
-4. Manifeste `trusted.toml` (section ci-dessus) + retrait des `ulimit`,
-   limites par entrée appliquées par le backend (cf. [platforms.md](platforms.md) §4) ;
+4. ✅ Manifeste `trusted.toml` + retrait des `ulimit` livrés : `timeout_secs`
+   et `no_path_check` appliqués par la console (kill du groupe de processus),
+   limites backend (`max_write_bytes`/`mem_bytes`/`cpus`/`network`) refusées
+   fail-closed tant que le backend n'existe pas ; leur application par le
+   backend arrive avec la phase 5 (cf. [platforms.md](platforms.md) §4) ;
 5. Couche d'abstraction plateforme `platform.rs` (macOS/Windows, plus de
    spécifique Linux) puis backends : seatbelt (macOS), WSL2 (Windows) ;
 6. Commandes `git` whitelist read-only (cf. [commands.md](commands.md)).

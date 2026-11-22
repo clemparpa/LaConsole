@@ -86,23 +86,31 @@ La v1 est Unix-only (Linux + macOS), documenté.
 
 ## v2 — prochaine fournée planifiée 🚧 (brouillon soumis à revue)
 
-- **Retirer les `ulimit`** du shell des commandes trusted : limites par entrée
-  (manifeste TOML) appliquées par le backend OS + timeout/kill appliqué par la
-  console (cf. `spec/platforms.md` §4, `spec/plugins.md`).
-- **Manifeste TOML `trusted.toml`** pour les commandes trusted : flags
-  optionnels (`no_path_check`), `timeout_secs`, `max_write_bytes` (quantité
-  d'écriture disque), `mem_bytes`/`cpus`, `network` par entrée ; épinglage
-  sha256 conservé, re-vérifié avant chaque exécution (cf. `spec/plugins.md`).
-- **Architecture multi-plateforme** : couche d'abstraction `platform.rs`,
+- ✅ **`trusted.toml` + retrait des `ulimit`** (cette PR) : manifeste TOML
+  strict (`.toml` seul format accepté — v1 `.txt` retiré —, `deny_unknown_fields`,
+  épinglage sha256 re-vérifié avant chaque exécution) avec, par entrée,
+  `description`, limites (`no_path_check`, `timeout_secs`, `max_write_bytes`,
+  `mem_bytes`/`cpus`, `network`) et `flags` = allowlist des arguments `-...`
+  (avec `description` par flag, rendu par `help`) ; tout flag non déclaré =
+  `denied` fail-closed ; plus d'`ulimit` dans le shell — la console
+  applique le timeout wall-clock + kill du **groupe de processus**
+  (`process_group(0)`, `timeout_secs` par entrée, défaut `--timeout-secs`) ;
+  les limites `max_write_bytes`/`mem_bytes`/`cpus`/`network` sont refusées
+  `denied` fail-closed tant qu'aucun backend OS n'existe, et seront appliquées
+  par le backend à la fournée suivante (cf. `spec/platforms.md` §4,
+  `spec/plugins.md`). `help` liste les entrées avec leurs limites.
+- 🚧 **Architecture multi-plateforme** : couche d'abstraction `platform.rs`,
   supprimer le spécifique Linux (`st_dev`/`st_ino` dans `resolve.rs`, `/bin/sh`
-  + `ulimit` dans `trusted.rs`, `unshare` dans `sandbox.rs`, symlinks des tests)
+  dans `trusted.rs`, `unshare` dans `sandbox.rs`, symlinks des tests)
   (cf. `spec/platforms.md`).
-- **Backends de confinement OS** : macOS = **seatbelt** (`sandbox-exec`, profil
+- 🚧 **Backends de confinement OS** : macOS = **seatbelt** (`sandbox-exec`, profil
   SBPL généré par entrée), Windows = console dans **WSL2** (VM utilitaire,
   ponts host désactivés sauf déclarés : interop `.exe`, `/mnt/c`, réseau, socket
-  docker), Linux = landlock par spawn + cage userns+chroot existante
-  (cf. `spec/platforms.md`, `spec/security.md`).
-- **Commandes `git` en whitelist** : read-only d'abord (`status`/`diff`/`log`/
+  docker), Linux = landlock par spawn + cage userns+chroot existante ; c'est
+  aussi le backend qui appliquera les limites par entrée de `trusted.toml`
+  (`max_write_bytes`/`mem_bytes`/`cpus`/`network`, refusées fail-closed
+  entre-temps) (cf. `spec/platforms.md`, `spec/security.md`).
+- 🚧 **Commandes `git` en whitelist** : read-only d'abord (`status`/`diff`/`log`/
   `show`/`branch`/`rev-parse`, in-process via `git2`) ; mutations (`add`,
   `commit`, `push`…) restent `trusted` (cf. `spec/commands.md`).
 

@@ -65,13 +65,23 @@ disponibles. Toute autre commande est refusée (`denied: unknown command`,
 code 2).
 
 `trusted <nom> [args...]` exécute une commande définie par l'humain dans
-`--trusted-file` (ex. `trusted.txt`, revu en PR), uniquement si le sha256 du
-fichier correspond à `--trusted-sha256` (re-vérifié avant chaque exécution).
-L'exécution se fait dans un shell réduit : `cwd = root`, environnement minimal
-(`HOME` hors du root), stdin fermé, limites `ulimit` sur le sous-processus.
-En pipe, `trusted` n'est accepté qu'en tête (`trusted x | grep …`) — jamais
-alimenté par un pipe, son stdin restant fermé. Les arguments de chemin passent par `resolve()` +
-fichiers sensibles, sauf flag `--no-path-check` déclaré dans `trusted.txt`.
+`--trusted-file`, uniquement si le sha256 du fichier correspond à
+`--trusted-sha256` (re-vérifié avant chaque exécution). Un seul format :
+`trusted.toml` (extension `.toml` obligatoire, l'ancien `trusted.txt` v1 est
+retiré) — manifeste TOML strict avec, par entrée `[commands.<nom>]`,
+`command`, `description`, `no_path_check`, `timeout_secs`, `max_write_bytes`,
+`mem_bytes`, `cpus`, `network`, et `flags` (allowlist des arguments `-...`
+acceptés, chacun avec sa `description` ; tout flag non déclaré = `denied`).
+L'exécution se fait dans un shell réduit : `cwd = root`,
+environnement minimal (`HOME` hors du root), stdin fermé, **aucun
+`ulimit`** — le timeout wall-clock + kill du groupe de processus est
+appliqué par la console elle-même (`timeout_secs` par entrée, défaut
+`--timeout-secs`) ; les limites `max_write_bytes`/`mem_bytes`/`cpus`/`network`
+nécessitent un backend de sandbox OS et sont refusées fail-closed tant
+qu'aucun backend n'est disponible. En pipe, `trusted` n'est accepté qu'en
+tête (`trusted x | grep …`) — jamais alimenté par un pipe, son stdin restant
+fermé. Les arguments de chemin passent par `resolve()` + fichiers sensibles,
+sauf `no_path_check` déclaré dans le manifeste.
 
 ## Documents de référence
 

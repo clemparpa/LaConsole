@@ -57,9 +57,11 @@ proptest! {
     }
 
     #[test]
-    fn random_path_operand_never_succeeds_in_empty_root(path in "[a-zA-Z0-9._/-]{1,24}") {
+    fn random_path_operand_never_succeeds_in_empty_root(path in "[a-zA-Z0-9._/][a-zA-Z0-9._/-]{0,23}") {
         // Empty root: any path operand must be denied or fail (missing file),
-        // never a successful read.
+        // never a successful read. The first char cannot be '-': a leading
+        // dash is an option, not a path operand (regression: the old generator
+        // could produce "-r", a valid flag of `sort`).
         let dir = tempfile::tempdir().unwrap();
         for cmd in FILTERS {
             let line = format!("{cmd} {path}");
@@ -87,4 +89,20 @@ proptest! {
             }
         }
     }
+}
+
+#[test]
+fn leading_dash_is_an_option_not_a_path_operand() {
+    // Deterministic regression for the flaky proptest above: `sort -r`
+    // parses `-r` as a flag, reads the (empty) stdin and succeeds — that
+    // is correct behavior, so the random generator must never produce a
+    // leading '-' as a "path".
+    let dir = tempfile::tempdir().unwrap();
+    let node = parse_input("sort -r", &HashMap::new()).unwrap();
+    let la_console::parse::Node::Simple(ref cmd) = node else {
+        panic!("expected simple command");
+    };
+    assert!(cmd.argv[1..].iter().all(|a| a.text.starts_with('-')));
+    let out = execute(&node, &ctx_for(&dir)).unwrap();
+    assert_eq!(out.code, 0);
 }

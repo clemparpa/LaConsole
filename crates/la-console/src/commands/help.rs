@@ -52,18 +52,54 @@ pub(crate) fn render_all(ctx: &Ctx) -> String {
             } else {
                 out.push_str("declared in the trusted file\n");
                 for entry in entries {
-                    let flags = if entry.no_path_check {
-                        " --no-path-check"
-                    } else {
-                        ""
-                    };
-                    out.push_str(&format!("  {} = {}{}\n", entry.name, entry.command, flags));
+                    out.push_str(&format!(
+                        "  {} = {}{}\n",
+                        entry.name,
+                        entry.command,
+                        entry_options(entry)
+                    ));
+                    if let Some(desc) = &entry.description {
+                        out.push_str(&format!("    description: {desc}\n"));
+                    }
+                    for (flag, spec) in &entry.flags {
+                        match &spec.description {
+                            Some(d) => out.push_str(&format!("    flag {flag}: {d}\n")),
+                            None => out.push_str(&format!("    flag {flag}\n")),
+                        }
+                    }
                 }
             }
         }
         None => out.push_str("not configured (--trusted-file)\n"),
     }
     out
+}
+
+fn entry_options(entry: &crate::trusted::TrustedEntry) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if entry.no_path_check {
+        parts.push("no_path_check".to_string());
+    }
+    if let Some(t) = entry.timeout_secs {
+        parts.push(format!("timeout_secs={t}"));
+    }
+    if let Some(b) = entry.max_write_bytes {
+        parts.push(format!("max_write_bytes={b}"));
+    }
+    if let Some(b) = entry.mem_bytes {
+        parts.push(format!("mem_bytes={b}"));
+    }
+    if let Some(c) = entry.cpus {
+        parts.push(format!("cpus={c}"));
+    }
+    if let Some(n) = entry.network {
+        parts.push(format!("network={n}"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", parts.join(", "))
+    }
 }
 
 fn render_one(spec: &CommandSpec) -> String {
@@ -161,10 +197,11 @@ mod tests {
     fn help_lists_trusted_entries_when_configured() {
         let dir = tempfile::tempdir().unwrap();
         let trusted_dir = tempfile::tempdir().unwrap();
-        let trusted_file = trusted_dir.path().join("trusted.txt");
+        let trusted_file = trusted_dir.path().join("trusted.toml");
         std::fs::write(
             &trusted_file,
-            "build = cargo build --locked\nrun-tests --no-path-check = cargo test\n",
+            "[commands.build]\ncommand = \"cargo build --locked\"\n\n\
+             [commands.run-tests]\ncommand = \"cargo test\"\nno_path_check = true\n",
         )
         .unwrap();
         let sha = crate::trusted::sha256_hex(std::fs::read(&trusted_file).unwrap().as_slice());
@@ -174,6 +211,29 @@ mod tests {
         let ctx = ctx_with(&dir, Some(registry));
         let text = render_all(&ctx);
         assert!(text.contains("build = cargo build --locked"));
-        assert!(text.contains("run-tests = cargo test --no-path-check"));
+        assert!(text.contains("run-tests = cargo test [no_path_check]"));
+    }
+
+    #[test]
+    fn help_lists_toml_entry_limits_description_and_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let trusted_dir = tempfile::tempdir().unwrap();
+        let trusted_file = trusted_dir.path().join("trusted.toml");
+        std::fs::write(
+            &trusted_file,
+            "[commands.build]\ncommand = \"cargo build\"\ndescription = \"Compile le projet\"\ntimeout_secs = 600\nnetwork = \"none\"\n\n\
+             [commands.build.flags]\n\"--release\" = { description = \"Build optimise\" }\n\"-j\" = {}\n",
+        )
+        .unwrap();
+        let sha = crate::trusted::sha256_hex(std::fs::read(&trusted_file).unwrap().as_slice());
+        let registry =
+            crate::trusted::TrustedRegistry::load(&trusted_file, Some(sha), dir.path(), false)
+                .unwrap();
+        let ctx = ctx_with(&dir, Some(registry));
+        let text = render_all(&ctx);
+        assert!(text.contains("build = cargo build [timeout_secs=600, network=none]"));
+        assert!(text.contains("description: Compile le projet"));
+        assert!(text.contains("flag --release: Build optimise"));
+        assert!(text.contains("flag -j\n"));
     }
 }
