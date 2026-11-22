@@ -144,11 +144,15 @@ mod tests {
             "C:\\foo",
             "C:/foo",
             "c:foo",
-            "a\\b",
             "\\\\server\\share",
             "\\\\?\\C:\\x",
             "a:b",
         ] {
+            assert!(matches!(normalize(bad), Err(Denied::WindowsPath)), "{bad}");
+        }
+        // On unix a backslash is never a separator: refused fail-closed too.
+        #[cfg(unix)]
+        for bad in ["a\\b", "src\\a.rs"] {
             assert!(matches!(normalize(bad), Err(Denied::WindowsPath)), "{bad}");
         }
     }
@@ -157,8 +161,13 @@ mod tests {
     fn canonical_within_rejects_absolute_outside_root() {
         let dir = tempfile::tempdir().unwrap();
         let resolver_root = platform::canonicalize(dir.path()).unwrap();
+        // Absolute path outside the root, built from the tempdir's parent so
+        // it is absolute on every OS (on Windows a `C:\...` input never gets
+        // here: `normalize()` refuses it with `WindowsPath` first).
+        let outside = dir.path().parent().unwrap().join("la-console-outside.txt");
+        assert!(outside.is_absolute());
         assert!(matches!(
-            canonical_within(&resolver_root, Path::new("/etc/passwd")),
+            canonical_within(&resolver_root, &outside),
             Err(Denied::AbsoluteOutsideRoot)
         ));
     }
@@ -171,9 +180,10 @@ mod tests {
         let link = link_parent.path().join("rootlink");
         assert!(platform::testutil::symlink_or_skip(dir.path(), &link));
         let resolver = Resolver::new(&link).unwrap();
-        let resolved = resolver
-            .resolve(link.join("ok.txt").to_str().unwrap())
-            .unwrap();
+        // `canonical_within` takes an already-normalized path: an absolute
+        // path through the symlinked root must land inside the canonical root.
+        let abs = link.join("ok.txt");
+        let resolved = canonical_within(resolver.root(), &abs).unwrap();
         assert!(resolved.starts_with(resolver.root()));
     }
 

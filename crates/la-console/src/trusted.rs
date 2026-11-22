@@ -809,6 +809,8 @@ mod tests {
         assert!(matches!(err, ExecError::Denied(m) if m.contains("unknown trusted command")));
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_executes_command_and_returns_output() {
         let dir = tempfile::tempdir().unwrap();
@@ -820,6 +822,8 @@ mod tests {
         assert_eq!(out.stdout, "hello-trusted\n");
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_passes_args_literally_without_sub_execution() {
         let dir = tempfile::tempdir().unwrap();
@@ -832,6 +836,8 @@ mod tests {
         assert!(!dir.path().join("pwned").exists());
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_cwd_is_root() {
         let dir = tempfile::tempdir().unwrap();
@@ -849,6 +855,8 @@ mod tests {
         );
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_env_is_minimal_and_hides_parent_secrets() {
         std::env::set_var("LACONSOLE_TEST_SECRET", "s3cr3t-value");
@@ -870,6 +878,8 @@ mod tests {
         ));
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_never_feeds_process_stdin_to_the_command() {
         let dir = tempfile::tempdir().unwrap();
@@ -881,6 +891,8 @@ mod tests {
         assert!(out.stdout.is_empty());
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_validates_path_args_through_resolve_and_sensibles() {
         let dir = tempfile::tempdir().unwrap();
@@ -900,6 +912,8 @@ mod tests {
         assert!(matches!(err, ExecError::Denied(_)));
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn flags_must_be_declared_to_be_accepted() {
         let dir = tempfile::tempdir().unwrap();
@@ -919,6 +933,8 @@ mod tests {
         assert!(matches!(err, ExecError::Denied(_)));
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn no_path_check_skips_path_validation_but_not_flag_validation() {
         let dir = tempfile::tempdir().unwrap();
@@ -931,6 +947,8 @@ mod tests {
         assert!(matches!(err, ExecError::Denied(ref m) if m.contains("not declared")));
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_denies_when_file_changed_since_validation() {
         let dir = tempfile::tempdir().unwrap();
@@ -948,6 +966,8 @@ mod tests {
         assert!(matches!(err, ExecError::Denied(m) if m.contains("checksum")));
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_kills_child_on_timeout() {
         let dir = tempfile::tempdir().unwrap();
@@ -985,6 +1005,8 @@ mod tests {
         );
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn entry_timeout_secs_overrides_global_timeout() {
         let dir = tempfile::tempdir().unwrap();
@@ -1020,6 +1042,8 @@ mod tests {
         assert_eq!(command_timeout_secs(&cmd, &ctx), 30);
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn toml_checksum_is_verified_before_every_execution() {
         let dir = tempfile::tempdir().unwrap();
@@ -1069,6 +1093,8 @@ mod tests {
         );
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn trusted_as_pipe_head_feeds_whitelist_commands() {
         let dir = tempfile::tempdir().unwrap();
@@ -1083,6 +1109,8 @@ mod tests {
         assert_eq!(out.stdout, "");
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn trusted_pipe_head_output_redirects_through_file_sink() {
         let dir = tempfile::tempdir().unwrap();
@@ -1098,6 +1126,8 @@ mod tests {
         );
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn pipe_head_trusted_still_verifies_checksum() {
         let dir = tempfile::tempdir().unwrap();
@@ -1115,6 +1145,8 @@ mod tests {
         assert!(matches!(err, ExecError::Denied(m) if m.contains("checksum")));
     }
 
+    // Spawns a real shell: unix-only (on Windows native, trusted is denied).
+    #[cfg(unix)]
     #[test]
     fn run_propagates_nonzero_exit_code() {
         let dir = tempfile::tempdir().unwrap();

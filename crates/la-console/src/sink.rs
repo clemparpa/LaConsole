@@ -211,10 +211,10 @@ impl FileSink {
         let rel = target
             .strip_prefix(resolver.root())
             .map_err(|_| Denied::AbsoluteOutsideRoot)?;
-        let rel_str = rel.to_string_lossy();
+        let rel_str = crate::platform::path_to_slash(rel);
         for pattern in sensibles {
             if pattern.is_match(&rel_str) {
-                return Err(SinkError::Sensitive(rel_str.into_owned()));
+                return Err(SinkError::Sensitive(rel_str.clone()));
             }
         }
         let file = if append {
@@ -333,11 +333,11 @@ impl Sink for PipeSink {
 
 pub fn sensitive_match(sensibles: &[regex::Regex], root: &Path, target: &Path) -> Option<String> {
     let rel = target.strip_prefix(root).ok()?;
-    let rel_str = rel.to_string_lossy();
+    let rel_str = crate::platform::path_to_slash(rel);
     sensibles
         .iter()
         .find(|p| p.is_match(&rel_str))
-        .map(|_| rel_str.into_owned())
+        .map(|_| rel_str)
 }
 
 /// Loads the sensitive-file patterns: one regex per line, `#` comments and

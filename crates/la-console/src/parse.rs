@@ -654,13 +654,13 @@ pub fn expand_globs(
         let Ok(rel) = path.strip_prefix(resolver.root()) else {
             continue;
         };
-        let Some(rel_str) = rel.to_str() else {
-            continue;
-        };
+        // Slash-normalized relative path: stable across OS and re-feedable to
+        // `resolve()` (accepts `/` everywhere, unlike a native `\` on unix).
+        let rel_str = crate::platform::path_to_slash(rel);
         resolver
-            .resolve(rel_str)
+            .resolve(&rel_str)
             .map_err(|e| ParseError::GlobDenied(e.to_string()))?;
-        matches.push(rel_str.to_string());
+        matches.push(rel_str);
         if matches.len() > max_matches {
             return Err(ParseError::TooManyGlobMatches(max_matches));
         }
@@ -1052,6 +1052,18 @@ mod tests {
             matches,
             vec!["src/a.rs".to_string(), "src/b.rs".to_string()]
         );
+    }
+
+    #[test]
+    fn expand_globs_normalizes_matches_to_slash_with_backslash_root() {
+        // On Windows the root is `C:\...`: internal matches are normalized to
+        // `/` so they stay valid inputs for `resolve()` on every OS.
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("weird\\root");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), b"").unwrap();
+        let matches = expand_globs(&root, "src/*.rs", DEFAULT_MAX_GLOB_MATCHES).unwrap();
+        assert_eq!(matches, vec!["src/a.rs".to_string()]);
     }
 
     #[test]

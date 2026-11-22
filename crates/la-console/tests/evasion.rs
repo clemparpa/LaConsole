@@ -14,6 +14,21 @@ fn canonical_root(dir: &tempfile::TempDir) -> std::path::PathBuf {
     platform::canonicalize(dir.path()).unwrap()
 }
 
+/// A root whose absolute path contains a backslash (as on Windows, `C:\...`)
+/// must not break resolution: only user input goes through the fail-closed
+/// windows-path check, never the canonical root itself.
+#[test]
+fn root_with_backslash_in_its_path_still_works() {
+    let base = tempfile::tempdir().unwrap();
+    let root_path = base.path().join("weird\\root");
+    fs::create_dir_all(root_path.join("src")).unwrap();
+    fs::write(root_path.join("src/a.rs"), b"ok").unwrap();
+    let resolved = resolve(&root_path, "src/a.rs").unwrap();
+    let canon_root = platform::canonicalize(&root_path).unwrap();
+    assert!(resolved.starts_with(&canon_root));
+    assert!(resolved.ends_with("src/a.rs") || resolved.ends_with("src\\a.rs"));
+}
+
 #[test]
 fn allows_simple_relative_path() {
     let dir = root();
@@ -35,6 +50,9 @@ fn denies_parent_dir() {
     ));
 }
 
+// Absolute unix paths are refused; on Windows an absolute input carries a
+// drive letter and is refused as `WindowsPath` (see denies_windows_style_paths).
+#[cfg(unix)]
 #[test]
 fn denies_absolute_outside_root() {
     let dir = root();
@@ -44,7 +62,7 @@ fn denies_absolute_outside_root() {
     ));
 }
 
-/// Windows-style paths (drive letter, backslash, UNC/verbatim prefix) are
+/// Windows-style absolute paths (drive letter, UNC/verbatim prefix) are
 /// refused fail-closed on every OS, not only on Windows.
 #[test]
 fn denies_windows_style_paths() {
@@ -53,7 +71,6 @@ fn denies_windows_style_paths() {
         "C:\\foo",
         "C:/foo",
         "c:foo",
-        "a\\b",
         "\\\\server\\share",
         "\\\\?\\C:\\x",
         "a:b",
@@ -65,6 +82,23 @@ fn denies_windows_style_paths() {
     }
 }
 
+/// On unix a backslash is never a path separator: refused fail-closed (on
+/// Windows a relative `a\b` keeps its native backslashes and stays valid).
+#[cfg(unix)]
+#[test]
+fn denies_backslash_paths_on_unix() {
+    let dir = root();
+    for bad in ["a\\b", "src\\a.rs"] {
+        assert!(
+            matches!(resolve(dir.path(), bad), Err(Denied::WindowsPath)),
+            "{bad}"
+        );
+    }
+}
+
+// On Windows every absolute input carries a drive letter and is refused as
+// `WindowsPath` (fail-closed): only relative inputs are accepted there.
+#[cfg(unix)]
 #[test]
 fn allows_absolute_inside_root() {
     let dir = root();
@@ -83,9 +117,14 @@ fn allows_root_passed_via_symlink() {
     }
     let resolved = resolve(&link, "sub/ok.txt").unwrap();
     assert!(resolved.starts_with(canonical_root(&dir)));
-    let abs = link.join("sub/ok.txt");
-    let resolved = resolve(&link, abs.to_str().unwrap()).unwrap();
-    assert!(resolved.starts_with(canonical_root(&dir)));
+    // Absolute input through the symlinked root: unix-only (on Windows it is
+    // a drive-letter path, refused as `WindowsPath`).
+    #[cfg(unix)]
+    {
+        let abs = link.join("sub/ok.txt");
+        let resolved = resolve(&link, abs.to_str().unwrap()).unwrap();
+        assert!(resolved.starts_with(canonical_root(&dir)));
+    }
 }
 
 #[test]

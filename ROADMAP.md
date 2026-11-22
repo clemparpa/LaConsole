@@ -103,8 +103,9 @@ La v1 est Unix-only (Linux + macOS), documenté.
   d'abstraction `platform.rs` (`platform/unix.rs` + `platform/windows.rs`,
   fonctions libres, fail-closed par défaut) ; branchements `resolve.rs`
   (`file_id`/`hardlink_escape`/`canonicalize` via `platform`, `normalize()`
-  refuse fail-closed les chemins Windows — `C:\`, backslash, UNC — sur tous les
-  OS), `trusted.rs` (`shell()`, `set_new_process_group`, `kill_process_tree`,
+  refuse fail-closed les chemins absolus Windows — drive `C:`, UNC `\\`, tout
+  `:` sur Windows, tout backslash sur unix — et les chemins internes sont
+  normalisés en relatifs `/` (`path_to_slash`) avant `resolve()`), `trusted.rs` (`shell()`, `set_new_process_group`, `kill_process_tree`,
   `exit_code`, `PATH` via `env::join_paths`), symlinks des tests via
   `platform::testutil` ; deps `dunce` + `winapi-util` (cible `cfg(windows)`
   uniquement) ; CI `+ windows-latest` à la matrice `test`. Sur Linux/macOS

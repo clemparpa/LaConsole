@@ -675,15 +675,10 @@ fn search_target(
                     ctx.limits.max_grep_files
                 )));
             }
-            let Some(entry_rel) = entry
-                .path()
-                .strip_prefix(ctx.resolver.root())
-                .ok()
-                .and_then(|p| p.to_str())
-                .map(str::to_string)
-            else {
+            let Ok(rel) = entry.path().strip_prefix(ctx.resolver.root()) else {
                 continue;
             };
+            let entry_rel = crate::platform::path_to_slash(rel);
             if ctx.resolver.resolve(&entry_rel).is_err() {
                 continue;
             }

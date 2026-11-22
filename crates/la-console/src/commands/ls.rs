@@ -76,13 +76,8 @@ fn list_one(ctx: &Ctx, rel: &str, all: bool, out: &mut Vec<u8>) -> Result<(), Ex
         let Some(name) = entry.file_name().to_str() else {
             continue;
         };
-        let entry_rel = entry
-            .path()
-            .strip_prefix(ctx.resolver.root())
-            .ok()
-            .and_then(|p| p.to_str())
-            .map(str::to_string);
-        if let Some(entry_rel) = entry_rel {
+        if let Ok(rel) = entry.path().strip_prefix(ctx.resolver.root()) {
+            let entry_rel = crate::platform::path_to_slash(rel);
             if ctx.resolver.resolve(&entry_rel).is_err() {
                 continue;
             }

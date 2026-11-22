@@ -43,19 +43,38 @@ pub fn hardlink_escape_ids(root: &FileId, target: &FileId) -> bool {
     root.dev != target.dev
 }
 
-/// True when `input` looks like a Windows path: any backslash (covers UNC
-/// `\\server\share` and verbatim `\\?\...`), or a `:` in the first segment
-/// (drive letter `C:...`, NTFS alternate data stream `file:stream`).
-/// Refused fail-closed on every OS — a backslash is never a valid separator
-/// for the console's confinement.
+/// True when `input` looks like an *absolute* Windows path or an NTFS stream
+/// and must be refused fail-closed:
+///
+/// - UNC / verbatim prefix `\\server\share`, `\\?\C:\...` (every OS) ;
+/// - on Windows: any `:` (drive letter `C:\...` or ADS `file:stream`) — a
+///   relative `src\a.rs` keeps its native backslashes and stays valid ;
+/// - on unix: any backslash (`\` is never a separator there) or a drive
+///   letter `C:...` in the first segment.
 pub fn looks_like_windows_path(input: &str) -> bool {
-    if input.contains('\\') {
+    if input.starts_with("\\\\") {
         return true;
     }
-    input
-        .split('/')
-        .next()
-        .is_some_and(|first| first.contains(':'))
+    if cfg!(windows) {
+        input.contains(':')
+    } else {
+        input.contains('\\')
+            || input
+                .split('/')
+                .next()
+                .is_some_and(|first| first.contains(':'))
+    }
+}
+
+/// Renders a path with `/` separators on every OS: stable output contract for
+/// the JSON protocol (and safe to re-feed to `resolve()`, which accepts `/`
+/// everywhere). On unix a literal backslash inside a component is preserved
+/// (`components()` does not split on `\` there).
+pub fn path_to_slash(path: &std::path::Path) -> String {
+    path.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Arguments of a busybox-style group kill: `<busybox> kill -KILL -<pgid>`.
@@ -116,17 +135,27 @@ mod tests {
 
     #[test]
     fn windows_path_detection_is_fail_closed() {
+        // Refused on every OS: drive letters, UNC and verbatim prefixes.
         for bad in [
             "C:\\foo",
             "C:/foo",
             "c:foo",
-            "a\\b",
             "\\\\server\\share",
             "\\\\?\\C:\\x",
-            "a:b",
             "C:",
+            "a:b",
         ] {
             assert!(looks_like_windows_path(bad), "{bad:?}");
+        }
+        // On unix a backslash is never a separator: refused fail-closed.
+        #[cfg(unix)]
+        for bad in ["a\\b", "src\\a.rs"] {
+            assert!(looks_like_windows_path(bad), "{bad:?}");
+        }
+        // On Windows a relative path keeps its native backslashes.
+        #[cfg(windows)]
+        for ok in ["a\\b", "src\\a.rs"] {
+            assert!(!looks_like_windows_path(ok), "{ok:?}");
         }
         for ok in [
             "foo",
@@ -139,6 +168,15 @@ mod tests {
         ] {
             assert!(!looks_like_windows_path(ok), "{ok:?}");
         }
+    }
+
+    #[test]
+    fn path_to_slash_normalizes_separators() {
+        assert_eq!(path_to_slash(std::path::Path::new("a/b/c")), "a/b/c");
+        #[cfg(windows)]
+        assert_eq!(path_to_slash(std::path::Path::new(r"a\b\c")), "a/b/c");
+        #[cfg(unix)]
+        assert_eq!(path_to_slash(std::path::Path::new("a\\b")), "a\\b");
     }
 
     #[test]

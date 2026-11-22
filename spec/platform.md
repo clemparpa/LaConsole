@@ -33,7 +33,7 @@ plugins, commandes `git` whitelist.
 |---|---|---|---|---|---|
 | 1 | Identité fichier (dev/ino) | `std::os::unix::fs::MetadataExt` (`dev()`, `nlink()`) — `resolve.rs:2,98-106` | `FileId { dev, ino }`, `file_id(&Metadata) -> Option<FileId>`, `file_id_of_path(&Path)`, `hardlink_escape(root, target) -> bool` | `MetadataExt` (std) | `winapi-util` (`GetFileInformationByHandle` : volume serial + file index + `nNumberOfLinks`) |
 | 2 | `canonicalize` verbatim `\\?\` | `fs::canonicalize` | `canonicalize(&Path) -> io::Result<PathBuf>` | `std::fs::canonicalize` | `dunce::canonicalize` |
-| 3 | Composants Windows (`C:`, `\`) | `normalize()` ignore `Component::Prefix` — `resolve.rs:52-66` | `looks_like_windows_path(&str) -> bool` ; `normalize()` rejette fail-closed | idem + rejet des backslashes | idem |
+| 3 | Composants Windows (`C:`, `\`) | `normalize()` ignore `Component::Prefix` — `resolve.rs:52-66` | `looks_like_windows_path(&str) -> bool` ; `normalize()` rejette fail-closed | rejet de tout `\` (jamais un séparateur sur unix) + des `C:` | rejet de tout `:` (drive `C:…` + NTFS ADS `file:stream`) et des préfixes UNC `\\…` ; les relatifs natifs `src\a.rs` restent valides |
 | 4 | Comparaison de chemins / casse | `starts_with` byte-à-byte | comparer uniquement des chemins passés par `platform::canonicalize` (casse réelle du disque) | inchangé | idem via `dunce` |
 | 5 | Shell trusted | `SHELL = "/bin/sh"` — `trusted.rs:15` | `shell() -> Option<&'static str>` | `Some("/bin/sh")` (cage : busybox, inchangé) | `None` → `trusted` denied |
 | 6 | Env minimal / `PATH` (`:` vs `;`) | `DEFAULT_PATH_ENV` en dur — `trusted.rs:16` | `default_path_entries() -> Vec<PathBuf>` + `env::join_paths` | idem | chemins Windows, `;` géré par std |
@@ -52,6 +52,10 @@ Notes :
   `same-file`, 0 nouveau transitif) qui lit volume serial + file index +
   `nNumberOfLinks` via `GetFileInformationByHandle`. `file_id(&Metadata)`
   retourne `None` sur Windows ; on passe par `file_id_of_path`.
+- Chemins internes : tout chemin interne (résultats du walker/globs) est
+  normalisé en relatif avec séparateurs `/` (`platform::path_to_slash`) avant
+  de repartir dans `resolve()` — ainsi un root absolu `C:\...` ne fait jamais
+  passer un chemin interne par le rejet fail-closed réservé à l'input.
 - Sémantique hardlink sur Windows : on refuse si le volume diffère de celui du
   root **ou** si `nNumberOfLinks > 1` (le link count existe bien sur Windows via
   `GetFileInformationByHandle`). Résiduel : sur ReFS l'index de fichier 64 bits
