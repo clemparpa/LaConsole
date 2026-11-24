@@ -6,20 +6,22 @@
 //! portable. Fail-closed by default: any uncertain primitive returns
 //! `None`/`Err`, which callers translate into `denied`.
 //!
-//! - Linux/macOS (`cfg(unix)`): behavior unchanged from v1.
+//! - macOS (targeted platform, decision 2026-11-24) + Linux (same code, kept
+//!   in the CI matrix): `cfg(any(target_os = "macos", target_os = "linux"))`
+//!   — behavior unchanged from v1.
 //! - Windows native (`cfg(windows)`): compiles and runs fail-closed — the
 //!   whitelist commands and `resolve()` work, `trusted` is `denied` (no
 //!   shell) and backend limits stay `denied` (via `backend_limit()`).
 
 use std::ffi::OsString;
 
-#[cfg(unix)]
-mod unix;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod macos;
 #[cfg(windows)]
 mod windows;
 
-#[cfg(unix)]
-use unix as imp;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use macos as imp;
 #[cfg(windows)]
 use windows as imp;
 
@@ -28,7 +30,7 @@ pub use imp::{
     kill_process_tree, set_new_process_group, shell,
 };
 
-/// Stable cross-OS file identity: unix `dev`/`ino`, Windows volume serial
+/// Stable cross-OS file identity: macOS/Linux `dev`/`ino`, Windows volume serial
 /// number + file index (via `same-file`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileId {
@@ -48,7 +50,7 @@ pub fn hardlink_escape_ids(root: &FileId, target: &FileId) -> bool {
 /// - UNC / verbatim prefix `\\server\share`, `\\?\C:\...` (every OS) ;
 /// - on Windows: any `:` (drive letter `C:\...` or ADS `file:stream`) — a
 ///   relative `src\a.rs` keeps its native backslashes and stays valid ;
-/// - on unix: any backslash (`\` is never a separator there) or a drive
+/// - on macOS/Linux: any backslash (`\` is never a separator there) or a drive
 ///   letter `C:...` in the first segment.
 pub fn looks_like_windows_path(input: &str) -> bool {
     if input.starts_with("\\\\") {
@@ -67,7 +69,7 @@ pub fn looks_like_windows_path(input: &str) -> bool {
 
 /// Renders a path with `/` separators on every OS (via `path-slash`): stable
 /// output contract for the JSON protocol, and safe to re-feed to `resolve()`,
-/// which accepts `/` everywhere. On unix a literal backslash inside a
+/// which accepts `/` everywhere. On macOS/Linux a literal backslash inside a
 /// component is preserved (`\` is not a separator there). Non-UTF-8 paths
 /// fall back to a lossy rendering.
 pub fn path_to_slash(path: &std::path::Path) -> String {
@@ -103,7 +105,7 @@ pub fn trusted_path_env() -> OsString {
 pub mod testutil {
     pub use super::imp::testutil::{set_exec_mode, symlink};
 
-    /// Test helper: creates `link -> original`. On unix a failure panics
+    /// Test helper: creates `link -> original`. On macOS/Linux a failure panics
     /// (tests are never silently skipped there); on Windows it returns
     /// `false` so the test can skip (the symlink privilege may be missing
     /// without Developer Mode).
@@ -116,7 +118,7 @@ pub mod testutil {
                     eprintln!("skipping test: cannot create symlink: {err}");
                     false
                 }
-                #[cfg(unix)]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 {
                     panic!("cannot create symlink {}: {err}", link.display())
                 }
@@ -143,8 +145,8 @@ mod tests {
         ] {
             assert!(looks_like_windows_path(bad), "{bad:?}");
         }
-        // On unix a backslash is never a separator: refused fail-closed.
-        #[cfg(unix)]
+        // On macOS/Linux a backslash is never a separator: refused fail-closed.
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         for bad in ["a\\b", "src\\a.rs"] {
             assert!(looks_like_windows_path(bad), "{bad:?}");
         }
@@ -171,7 +173,7 @@ mod tests {
         assert_eq!(path_to_slash(std::path::Path::new("a/b/c")), "a/b/c");
         #[cfg(windows)]
         assert_eq!(path_to_slash(std::path::Path::new(r"a\b\c")), "a/b/c");
-        #[cfg(unix)]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         assert_eq!(path_to_slash(std::path::Path::new("a\\b")), "a\\b");
     }
 
@@ -197,21 +199,21 @@ mod tests {
     fn trusted_path_env_is_built_with_the_os_separator() {
         let path = trusted_path_env();
         assert!(!path.is_empty());
-        #[cfg(unix)]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         assert!(path.to_string_lossy().contains("/usr/bin"));
     }
 
-    #[cfg(unix)]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn unix_shell_and_default_path_entries() {
+    fn macos_shell_and_default_path_entries() {
         use std::path::PathBuf;
         assert_eq!(shell(), Some("/bin/sh"));
         assert!(default_path_entries().contains(&PathBuf::from("/usr/bin")));
     }
 
-    #[cfg(unix)]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn unix_file_id_comes_from_metadata() {
+    fn macos_file_id_comes_from_metadata() {
         let dir = tempfile::tempdir().unwrap();
         let meta = std::fs::metadata(dir.path()).unwrap();
         assert_eq!(file_id(&meta), file_id_of_path(dir.path()));

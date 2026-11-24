@@ -11,9 +11,10 @@
 
 Un seul module connaît l'OS ; tout le reste du code passe par ses fonctions.
 
-- **Linux + macOS** (unix) : comportement **inchangé** — la CI tourne déjà sur
-  ubuntu + macOS ; tous les tests existants doivent passer sans modification de
-  sémantique.
+- **macOS** (plateforme cible visée, décision 2026-11-24) **+ Linux** (même
+  code, gardé dans la matrice CI) : comportement **inchangé** — la CI tourne
+  déjà sur ubuntu + macOS ; tous les tests existants doivent passer sans
+  modification de sémantique.
 - **Windows natif** : le code **compile** et tourne **fail-closed** là où il n'y a
   pas de backend : `trusted` → `denied` (pas de shell), limites backend de
   `trusted.toml` → `denied` (déjà le cas via `backend_limit()`). Les commandes
@@ -74,7 +75,7 @@ en spawn de binaires (`taskkill`) — cohérent avec « zéro FFI/`unsafe` chez 
 
 ```
 src/platform.rs          # API publique (fonctions libres) + ré-exports + doc
-src/platform/unix.rs     # #[cfg(unix)]     : impls Linux + macOS
+src/platform/macos.rs    # #[cfg(any(target_os = "macos", target_os = "linux"))] : impls macOS (cible) + Linux
 src/platform/windows.rs  # #[cfg(windows)]   : impls Windows natif (fail-closed)
 ```
 
@@ -117,13 +118,14 @@ pub fn exit_code(status: &std::process::ExitStatus) -> u16;
 - **Unit cross-OS (sans `cfg`)** : toute la logique pure de §4 (validation des
   chemins Windows, args du kill, `hardlink_escape` synthétique, env trusted)
   tourne sur ubuntu + macOS + Windows.
-- **Unit/e2e `cfg(unix)`** : identité fichier réelle, kill du groupe de processus
+- **Unit/e2e `cfg(any(target_os = "macos", target_os = "linux"))`** : identité
+  fichier réelle, kill du groupe de processus
   (test existant `timeout_kills_the_whole_process_group`), symlinks → ubuntu + macOS.
 - **Unit/e2e `cfg(windows)`** : `file_id_of_path` via `winapi-util`, `canonicalize` sans
   préfixe verbatim, `taskkill_args` → runner `windows-latest`. Sur les runners
   GitHub `windows-latest` le Developer Mode est actif : les symlinks de test
   fonctionnent ; si la création échoue (permission), le test **skippe**
-  (uniquement sur Windows, jamais silencieusement sur unix).
+  (uniquement sur Windows, jamais silencieusement sur macOS/Linux).
 - **e2e nouveaux scénarios Windows** : `trusted x` → `denied` (pas de shell) ;
   `resolve()` refuse `C:\foo`, `a\b`, `..` →
   `tests/evasion.rs` / `tests/e2e.rs`.
@@ -148,14 +150,14 @@ pub fn exit_code(status: &std::process::ExitStatus) -> u16;
 
 Une seule PR, testable, CI verte sur les 3 OS :
 
-1. `platform.rs` + `platform/unix.rs` + `platform/windows.rs` + `testutil` ;
+1. `platform.rs` + `platform/macos.rs` + `platform/windows.rs` + `testutil` ;
 2. branchements `resolve.rs` / `trusted.rs` / tests (tableau §5) ;
 3. `Cargo.toml` : `+ dunce`, `+ winapi-util` en `[target.'cfg(windows)'.dependencies]` (`cargo deny` / `cargo audit` restent verts) ;
 4. `ci.yml` : matrice `+ windows-latest` ;
 5. docs : cette spec + sommaire `spec/README.md` + `structure.md` + `ROADMAP.md`.
 
-**Testable** : CI verte ubuntu + macOS + Windows ; sur unix tous les tests
-existants passent sans changement de sémantique ; sur Windows, whitelist +
+**Testable** : CI verte ubuntu + macOS + Windows ; sur macOS/Linux tous les
+tests existants passent sans changement de sémantique ; sur Windows, whitelist +
 `resolve()` fonctionnent et `trusted` / limites backend sont
 refusés fail-closed.
 

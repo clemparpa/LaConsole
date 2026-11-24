@@ -150,8 +150,8 @@ mod tests {
         ] {
             assert!(matches!(normalize(bad), Err(Denied::WindowsPath)), "{bad}");
         }
-        // On unix a backslash is never a separator: refused fail-closed too.
-        #[cfg(unix)]
+        // On macOS/Linux a backslash is never a separator: refused fail-closed too.
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         for bad in ["a\\b", "src\\a.rs"] {
             assert!(matches!(normalize(bad), Err(Denied::WindowsPath)), "{bad}");
         }

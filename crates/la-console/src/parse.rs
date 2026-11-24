@@ -669,7 +669,7 @@ pub fn expand_globs(
             continue;
         };
         // Slash-normalized relative path: stable across OS and re-feedable to
-        // `resolve()` (accepts `/` everywhere, unlike a native `\` on unix).
+        // `resolve()` (accepts `/` everywhere, unlike a native `\` on macOS/Linux).
         let rel_str = crate::platform::path_to_slash(rel);
         resolver
             .resolve(&rel_str)
