@@ -147,8 +147,11 @@ le confinement **dans l'enfant juste avant exec** — jamais dans le harness
   même patron que le mode serveur Linux ; ponts host (interop `.exe`,
   `/mnt/c`, réseau NAT, socket docker) désactivés sauf déclaration explicite ;
   cf. [platforms.md](platforms.md) §3 ;
-- crate `nono` (Apache-2.0) comme alternative cross-platform unique dans le
-  helper, à auditer/épingler une fois (0.x).
+- ✅ **décision actée (2026-11-24)** : crate `nono` (Apache-2.0) retenue comme
+  backend de confinement unique (Landlock/Seatbelt/WSL2), via la couche
+  d'abstraction `src/sandbox_backend.rs` — voir [platforms.md](platforms.md) §3.
+  Version épinglée, auditée avant chaque bump ; un breaking change ne touche que
+  ce module.
 
 **✅ Décision v2 livrée : les `ulimit` du shell trusted sont retirés** (non portables —
 `ulimit -v` absent sur macOS — et `-v` borne l'address space virtuel, pas la
