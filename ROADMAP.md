@@ -95,7 +95,7 @@ retirés. Le confinement noyau passe désormais par le backend par spawn
   par le backend à la fournée suivante (cf. `spec/platforms.md` §4,
   `spec/plugins.md`). `help` liste les entrées avec leurs limites.
 - ✅ **Architecture multi-plateforme — phase 1** (cette PR) : couche
-  d'abstraction `platform.rs` (`platform/unix.rs` + `platform/windows.rs`,
+  d'abstraction `platform.rs` (`platform/macos.rs` + `platform/windows.rs`,
   fonctions libres, fail-closed par défaut) ; branchements `resolve.rs`
   (`file_id`/`hardlink_escape`/`canonicalize` via `platform`, `normalize()`
   refuse fail-closed les chemins absolus Windows — drive `C:`, UNC `\\`, tout
@@ -108,6 +108,14 @@ retirés. Le confinement noyau passe désormais par le backend par spawn
   fonctionnent et `trusted` (pas de shell) ainsi que les
   limites backend restent refusés fail-closed. Spec : `spec/platform.md` ;
   backends OS (seatbelt/WSL2/landlock) : `spec/platforms.md`.
+- ✅ **Renommage `unix` → `macos`** (décision 2026-11-24, cette PR) :
+  `platform/unix.rs` → `platform/macos.rs` (macOS = plateforme cible visée,
+  Linux garde le même code via la matrice CI) ; les `cfg(unix)` du crate
+  deviennent `cfg(any(target_os = "macos", target_os = "linux"))` partout où
+  le code référence les primitives `platform` (sélection de l'impl dans
+  `platform.rs`, branchements `resolve.rs`/`trusted.rs`, tests) — aucun
+  changement de sémantique ; commentaires/noms de tests ajustés ; docs
+  (`spec/platform.md`, `spec/platforms.md`, `spec/structure.md`) à jour.
 - 🚧 **Backends de confinement OS** — ✅ décision actée (2026-11-24) : backend
   retenu = crate **`nono`** (Landlock Linux / Seatbelt macOS / WSL2 pour Windows)
   via une **couche d'abstraction unique** `src/sandbox_backend.rs`

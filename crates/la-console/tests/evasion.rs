@@ -52,7 +52,7 @@ fn denies_parent_dir() {
 
 // Absolute unix paths are refused; on Windows an absolute input carries a
 // drive letter and is refused as `WindowsPath` (see denies_windows_style_paths).
-#[cfg(unix)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn denies_absolute_outside_root() {
     let dir = root();
@@ -82,11 +82,11 @@ fn denies_windows_style_paths() {
     }
 }
 
-/// On unix a backslash is never a path separator: refused fail-closed (on
+/// On macOS/Linux a backslash is never a path separator: refused fail-closed (on
 /// Windows a relative `a\b` keeps its native backslashes and stays valid).
-#[cfg(unix)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
-fn denies_backslash_paths_on_unix() {
+fn denies_backslash_paths_on_macos_linux() {
     let dir = root();
     for bad in ["a\\b", "src\\a.rs"] {
         assert!(
@@ -98,7 +98,7 @@ fn denies_backslash_paths_on_unix() {
 
 // On Windows every absolute input carries a drive letter and is refused as
 // `WindowsPath` (fail-closed): only relative inputs are accepted there.
-#[cfg(unix)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn allows_absolute_inside_root() {
     let dir = root();
@@ -117,9 +117,9 @@ fn allows_root_passed_via_symlink() {
     }
     let resolved = resolve(&link, "sub/ok.txt").unwrap();
     assert!(resolved.starts_with(canonical_root(&dir)));
-    // Absolute input through the symlinked root: unix-only (on Windows it is
+    // Absolute input through the symlinked root: macOS/Linux-only (on Windows it is
     // a drive-letter path, refused as `WindowsPath`).
-    #[cfg(unix)]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let abs = link.join("sub/ok.txt");
         let resolved = resolve(&link, abs.to_str().unwrap()).unwrap();
@@ -157,9 +157,9 @@ fn denies_symlink_dir_escape() {
     ));
 }
 
-// Hardlink detection via the link count (`nlink`) is unix-only; on Windows
+// Hardlink detection via the link count (`nlink`) is macOS/Linux-only; on Windows
 // a same-volume hardlink is undetectable (documented in spec/security.md).
-#[cfg(unix)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn denies_hardlink_escape() {
     let dir = root();
@@ -204,10 +204,10 @@ fn dotdot_like_names_are_literal() {
 }
 
 /// Win32 tronque les points/espaces de fin de nom ("...." devient ""), donc ce
-/// cas n'existe pas tel quel sur Windows : unix-only.
-#[cfg(unix)]
+/// cas n'existe pas tel quel sur Windows : macOS/Linux-only.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
-fn trailing_dots_name_is_literal_on_unix() {
+fn trailing_dots_name_is_literal_on_macos_linux() {
     let dir = root();
     let resolved = resolve(dir.path(), "....//").unwrap();
     assert!(resolved.ends_with("...."));

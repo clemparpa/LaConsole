@@ -19,7 +19,7 @@ la-console/
         resolve.rs    # resolve() : confinement root, unique point de passage
         commands/     # whitelist: cat, ls, echo, grep, sed, sub, http + filtres de flux head/tail/wc/sort/uniq/cut/tr (stream.rs = helpers communs)
         trusted.rs    # commandes trusted : manifeste TOML strict (trusted.toml, seul format accepté), checksum sha256, exécution shell réduite (/bin/sh via platform::shell()) ; plus d'ulimit : timeout/kill du groupe de processus par la console
-        platform.rs   # couche d'abstraction OS (spec/platform.md) : primitives fs (identité fichier, canonicalize), spawn + kill de l'arbre, exit code, shell — impls cfg(unix)/cfg(windows), fail-closed sur Windows natif ; backend de confinement OS prévu v2 via la crate nono (spec/platforms.md)
+        platform.rs   # couche d'abstraction OS (spec/platform.md) : primitives fs (identité fichier, canonicalize), spawn + kill de l'arbre, exit code, shell — impls platform/macos.rs (cfg(any(target_os = "macos", target_os = "linux")); macOS = cible visée, Linux = même code) / platform/windows.rs (cfg(windows)), fail-closed sur Windows natif ; backend de confinement OS prévu v2 via la crate nono (spec/platforms.md)
         sink.rs       # trait Sink + FileSink / CallerSink / PipeSink
       tests/
         evasion.rs    # tests d'évasion (.., symlinks, absolus, unicode...)

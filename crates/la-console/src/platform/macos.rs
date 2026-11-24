@@ -1,5 +1,7 @@
-//! Unix (Linux + macOS) implementations of the platform primitives.
-//! Behavior is identical to the v1 unix-only code.
+//! macOS implementations of the platform primitives — the targeted platform
+//! (decision 2026-11-24). Linux runs the same code (kept in the CI matrix);
+//! behavior is identical to the v1 unix-only code. The `std::os::unix::*`
+//! APIs stay: this is unix code, the module is just named after the target.
 
 use std::fs;
 use std::io;
@@ -25,7 +27,7 @@ pub fn file_id_of_path(path: &Path) -> Option<FileId> {
 }
 
 /// A hardlink escapes the root when the target lives on another device, or
-/// when it is a file with a link count above 1 (visible on unix). Any
+/// when it is a file with a link count above 1 (visible on macOS/Linux). Any
 /// uncertainty (unreadable metadata, no file id) is fail-closed: escape.
 pub fn hardlink_escape(root: &Path, target: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;

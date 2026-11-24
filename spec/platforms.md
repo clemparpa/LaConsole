@@ -33,12 +33,12 @@ Un seul module connaît l'OS ; le reste du code passe par des traits :
 
 - `fs_primitives` : canonicalize (std), détection des hardlinks hors root
   (`st_dev`/`st_ino` via `std::os::unix` aujourd'hui → équivalent Windows :
-  index de fichier), symlinks dans les tests (`#[cfg(unix)]` aujourd'hui) ;
+  index de fichier), symlinks dans les tests (`#[cfg(any(target_os = "macos", target_os = "linux"))]` aujourd'hui) ;
 - `process` : spawn du shell + application des limites = backend (section 3) ;
 - `exit_code` : `128+signal` via `std::os::unix` aujourd'hui → version
   Windows (code de sortie natif, pas de signaux).
 
-Inventaire du code Unix-spécifique à abstraire :
+Inventaire du code unix (macOS/Linux) spécifique à abstraire :
 
 - `resolve.rs` : `std::os::unix::fs::MetadataExt` (`st_dev`/`st_ino`) ;
 - `trusted.rs` : `SHELL = /bin/sh`, script `ulimit` (retiré), `ExitStatusExt` ;

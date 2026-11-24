@@ -99,8 +99,8 @@ fn spawn_console(fx: &TrustedFixture, sha: &str) -> std::process::Child {
         .unwrap()
 }
 
-// Spawns a real shell: unix-only (denied fail-closed on Windows native).
-#[cfg(unix)]
+// Spawns a real shell: macOS/Linux-only (denied fail-closed on Windows native).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn e2e_trusted_executes_with_valid_checksum() {
     let fx = trusted_fixture("[commands.hello]\ncommand = \"echo hi-from-trusted\"\n");
@@ -196,8 +196,8 @@ fn trusted_toml_fixture(content: &str) -> TrustedFixture {
     }
 }
 
-// Spawns a real shell: unix-only (denied fail-closed on Windows native).
-#[cfg(unix)]
+// Spawns a real shell: macOS/Linux-only (denied fail-closed on Windows native).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn e2e_trusted_toml_executes_with_valid_checksum() {
     let fx = trusted_toml_fixture("[commands.hello]\ncommand = \"echo hi-from-toml\"\n");
@@ -276,8 +276,8 @@ fn e2e_trusted_toml_backend_limit_denied_without_backend() {
     assert!(child.wait().unwrap().success());
 }
 
-// Spawns a real shell: unix-only (denied fail-closed on Windows native).
-#[cfg(unix)]
+// Spawns a real shell: macOS/Linux-only (denied fail-closed on Windows native).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn e2e_trusted_toml_entry_timeout_overrides_global() {
     let fx = trusted_toml_fixture("[commands.slow]\ncommand = \"sleep 30\"\ntimeout_secs = 1\n");
@@ -339,8 +339,8 @@ fn e2e_trusted_txt_extension_is_refused() {
     assert!(stderr.contains(".toml"), "stderr: {stderr}");
 }
 
-// Spawns a real shell: unix-only (denied fail-closed on Windows native).
-#[cfg(unix)]
+// Spawns a real shell: macOS/Linux-only (denied fail-closed on Windows native).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn e2e_trusted_flags_allowlist() {
     let fx = trusted_toml_fixture(
@@ -377,8 +377,8 @@ fn e2e_trusted_flags_allowlist() {
     assert!(child.wait().unwrap().success());
 }
 
-// Spawns a real shell: unix-only (denied fail-closed on Windows native).
-#[cfg(unix)]
+// Spawns a real shell: macOS/Linux-only (denied fail-closed on Windows native).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn e2e_trusted_as_pipe_head_pipes_into_whitelist() {
     let fx =
@@ -871,11 +871,11 @@ fn e2e_refuses_windows_style_paths() {
     assert!(child.wait().unwrap().success());
 }
 
-/// On unix a backslash in a quoted path is refused fail-closed (on Windows it
+/// On macOS/Linux a backslash in a quoted path is refused fail-closed (on Windows it
 /// is the native separator and stays valid for relative paths).
-#[cfg(unix)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
-fn e2e_refuses_backslash_paths_on_unix() {
+fn e2e_refuses_backslash_paths_on_macos_linux() {
     let dir = tempfile::tempdir().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
         .arg("--root")

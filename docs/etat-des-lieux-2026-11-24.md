@@ -11,9 +11,12 @@ Document de travail, non indexé dans `spec/README.md`.
    ainsi que `Ctx::sandboxed`/`Ctx::sandbox_shell`, le paramètre `cage_shell` de
    `kill_process_tree`, et la dépendance `walkdir` (staging de cage). Le flag `--mode`
    disparaît du CLI.
-2. **`platform.rs` : renommer `unix` → `macos`** — la cible visée est macOS, pas Linux
-   générique : `platform/unix.rs` devient `platform/macos.rs` (et `cfg(unix)` devient
-   `cfg(target_os = "macos")` là où c'est pertinent). Windows natif reste fail-closed tel quel.
+2. **✅ FAIT — `platform.rs` : renommer `unix` → `macos`** (cette PR) — la cible
+   visée est macOS, pas Linux générique : `platform/unix.rs` est devenu
+   `platform/macos.rs`, et les `cfg(unix)` du crate sont devenus
+   `cfg(any(target_os = "macos", target_os = "linux"))` partout où le code référence
+   les primitives `platform` (Linux garde le même code via la matrice CI).
+   Windows natif reste fail-closed tel quel.
 3. **✅ DÉCISION ACTÉE (2026-11-24) — backend sandbox OS = crate `nono`** (nolabs-ai, Apache-2.0,
    v0.79, ~28K SLoC, ~3,6K stars — Landlock Linux ≥ 5.13 / Seatbelt macOS / WSL2 pour Windows),
    **via une couche d'abstraction unique** `src/sandbox_backend.rs` (`apply(profile)` +
@@ -65,7 +68,7 @@ Document de travail, non indexé dans `spec/README.md`.
 
 ### Multi-plateforme phase 1 (#41)
 
-- `platform.rs` + `platform/{unix,windows}.rs` : `FileId`/`hardlink_escape`, `canonicalize` (dunce), `looks_like_windows_path`, `path_to_slash`, `shell()`, `set_new_process_group`, `kill_process_tree` (kill pgid / `taskkill /T`), `exit_code`, `testutil` — ⚠️ `unix` sera renommé `macos` (décision 2)
+- `platform.rs` + `platform/{unix,windows}.rs` : `FileId`/`hardlink_escape`, `canonicalize` (dunce), `looks_like_windows_path`, `path_to_slash`, `shell()`, `set_new_process_group`, `kill_process_tree` (kill pgid / `taskkill /T`), `exit_code`, `testutil` — ✅ `unix` renommé `macos` (décision 2, cette PR)
 - Deps `cfg(windows)` : `dunce` + `winapi-util` ; CI matrice **ubuntu + macOS + windows-latest**
 - Windows natif : compile et tourne fail-closed — whitelist + `resolve()` OK, `trusted` / `--mode server` / limites backend refusés
 
@@ -98,4 +101,10 @@ Document de travail, non indexé dans `spec/README.md`.
 ## D. Impact des décisions de direction sur les docs
 
 - **Décision 1 (suppression du mode server)** : ✅ traité avec le code — `ROADMAP.md` (v2 étapes 1 et 2 marquées supprimées), `spec/security.md` (niveaux de confinement), `spec/protocol.md` (flags retirés), `spec/structure.md` (`sandbox.rs` et `walkdir` retirés), `spec/commands.md` (trusted en mode serveur + « scan des changements » fantôme retirés), `spec/platform.md` §2/§5, `docs/README.md`, `spec/platforms.md`, `spec/plugins.md`, `spec/testing.md` : tout ce qui décrivait `--mode server`, la cage userns+chroot, le busybox stagé et le remount read-only a été retiré.
-- **Décision 2 (unix → macos)** — à faire, PAS encore dans le code : `spec/platform.md` (§4 `platform/unix.rs`, §5 branchements), `spec/platforms.md` §2 (inventaire `cfg(unix)`), `spec/structure.md` (ligne `platform.rs`) : renommer le module et les `cfg(unix)` pertinents en macOS.
+- **Décision 2 (unix → macos)** — ✅ faite (cette PR) : `platform/unix.rs` →
+  `platform/macos.rs` ; `cfg(unix)` → `cfg(any(target_os = "macos", target_os = "linux"))`
+  dans tout le crate (sélection de l'impl dans `platform.rs` + code/tests qui
+  référencent les primitives `platform`) ; commentaires et noms de tests ajustés ;
+  `spec/platform.md` (§1, §4 `platform/macos.rs`, §5 branchements, §6, §8),
+  `spec/platforms.md` §2 (inventaire), `spec/structure.md` (ligne `platform.rs`),
+  `ROADMAP.md` mis à jour.
