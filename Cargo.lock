@@ -914,7 +914,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
- "walkdir",
  "wax",
  "winapi-util",
 ]

@@ -14,29 +14,19 @@ et la console répond en JSON, une ligne par réponse sur stdout.
 ## Lancement et protocole
 
 ```
-la-console --root <chemin> [--mode user|server] [--timeout-secs N] [--max-output-bytes N] [--trusted-file <chemin> --trusted-sha256 <hex>] [--sensibles-file <chemin>] [--secrets-file <chemin>] [--sandbox-busybox <chemin> [--sandbox-busybox-sha256 <hex>]] [--sandbox-tools-dir <dir>]
+la-console --root <chemin> [--timeout-secs N] [--max-output-bytes N] [--trusted-file <chemin> --trusted-sha256 <hex>] [--sensibles-file <chemin>] [--secrets-file <chemin>]
 ```
 
-Deux modes de déploiement (voir [spec/security.md](../spec/security.md)) :
-`--mode user` (défaut) tourne partout, macOS compris, avec le confinement pur
-Rust ; `--mode server` (Linux uniquement) re-exécute la console dans un user
-namespace non privilégié + chroot (`unshare`), pour un déploiement serveur —
-refusé proprement (exit 2) sur les autres plateformes. La console doit tourner
-comme l'utilisateur propriétaire du `root`.
+La console tourne partout (macOS + Linux poste utilisateur) avec le confinement
+pur Rust (voir [spec/security.md](../spec/security.md)) ; elle doit tourner comme
+l'utilisateur propriétaire du `root`.
 
 Sur Windows natif, le binaire compile et tourne en mode **fail-closed** (phase 1
 de [spec/platform.md](../spec/platform.md)) : les commandes whitelist et
-`resolve()` fonctionnent normalement, mais `trusted` (pas de shell), `--mode
-server` (exit 2) et les limites backend de `trusted.toml` y sont refusés. Le
-déploiement Windows visé reste la console lancée dans **WSL2** (voir
+`resolve()` fonctionnent normalement, mais `trusted` (pas de shell) et les
+limites backend de `trusted.toml` y sont refusés. Le déploiement Windows visé
+reste la console lancée dans **WSL2** (voir
 [spec/platforms.md](../spec/platforms.md)).
-
-En mode serveur, la cage peut être équipée d'une mini-image (v2 étape 2) :
-`--sandbox-busybox` (busybox statique, épinglable par sha256) placé en
-`/bin/busybox` avec ses applets, et `--sandbox-tools-dir` (ex. git + go) copié
-en `/opt/la-console-tools` ; `/bin` et l'outillage sont remontés read-only au
-démarrage (échec = exit 2, fail-closed). Avec un busybox stagé, les commandes `trusted` tournent via
-`busybox sh -c` ; sans busybox, elles restent indisponibles (`denied`).
 
 - Entrée : `{"op": "exec", "cmd": "ls src"}`
 - Sortie : `{"ok": true, "code": 0, "stdout": "...", "stderr": "", "truncated": false}`

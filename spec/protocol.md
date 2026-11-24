@@ -7,16 +7,11 @@ qui la pilote). L'isolation par processus garantit qu'un crash de la console
 (ex. lecture d'un très gros fichier) n'affecte pas l'appelant.
 
 ```
-la-console --root <chemin> [--mode user|server] [--max-output-bytes N] [--timeout-secs N] [--trusted-file <chemin>] [--sensibles-file <chemin>] [--secrets-file <chemin>] [--sandbox-busybox <chemin> [--sandbox-busybox-sha256 <hex>]] [--sandbox-tools-dir <dir>]
+la-console --root <chemin> [--max-output-bytes N] [--timeout-secs N] [--trusted-file <chemin>] [--sensibles-file <chemin>] [--secrets-file <chemin>]
 ```
 
 - `--root` : répertoire racine du confinement, résolu en chemin canonique
   **une seule fois** au démarrage (`std::fs::canonicalize`).
-- `--mode` : `user` (défaut, macOS + Linux poste utilisateur : confinement pur
-  Rust) ou `server` (Linux uniquement : re-exec dans un user namespace non
-  privilégié + chroot, voir [security.md](security.md)). Sur une plateforme
-  non Linux, `--mode server` est refusé (exit 2). Flag interne caché
-  `--inside-sandbox` : posé par le re-exec pour empêcher une boucle.
 - `--max-output-bytes` : borne de troncature des sorties (défaut raisonnable,
   ex. 1 Mo).
 - `--timeout-secs` : timeout par commande (défaut ex. 30 s).
@@ -29,13 +24,6 @@ la-console --root <chemin> [--mode user|server] [--max-output-bytes N] [--timeou
   illisible = exit 1, fail-closed). Toute occurrence d'un secret connu est
   masquée (`***`) dans la réponse JSON et avant toute écriture sur disque.
   Optionnel.
-- `--sandbox-busybox` : mode serveur uniquement — chemin d'un busybox
-  **statique** (vérifié ELF + `ldd`) stagé dans la cage en `/bin/busybox` pour
-  permettre l'exécution des commandes `trusted` via `busybox sh` ; épinglable
-  par `--sandbox-busybox-sha256 <hex>`. Sans busybox stagé, `trusted` = `denied`.
-- `--sandbox-tools-dir` : mode serveur uniquement — répertoire d'outillage
-  (git, toolchain go, ...) copié dans la cage en `/opt/la-console-tools`, avec
-  les dépendances dynamiques de chaque binaire ELF (loader + libs).
 
 ## Protocole de transport : ligne par ligne sur stdin/stdout
 

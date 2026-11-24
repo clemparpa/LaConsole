@@ -125,8 +125,6 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted,
-            sandboxed: false,
-            sandbox_shell: None,
         }
     }
 
@@ -206,8 +204,7 @@ mod tests {
         .unwrap();
         let sha = crate::trusted::sha256_hex(std::fs::read(&trusted_file).unwrap().as_slice());
         let registry =
-            crate::trusted::TrustedRegistry::load(&trusted_file, Some(sha), dir.path(), false)
-                .unwrap();
+            crate::trusted::TrustedRegistry::load(&trusted_file, Some(sha), dir.path()).unwrap();
         let ctx = ctx_with(&dir, Some(registry));
         let text = render_all(&ctx);
         assert!(text.contains("build = cargo build --locked"));
@@ -227,8 +224,7 @@ mod tests {
         .unwrap();
         let sha = crate::trusted::sha256_hex(std::fs::read(&trusted_file).unwrap().as_slice());
         let registry =
-            crate::trusted::TrustedRegistry::load(&trusted_file, Some(sha), dir.path(), false)
-                .unwrap();
+            crate::trusted::TrustedRegistry::load(&trusted_file, Some(sha), dir.path()).unwrap();
         let ctx = ctx_with(&dir, Some(registry));
         let text = render_all(&ctx);
         assert!(text.contains("build = cargo build [timeout_secs=600, network=none]"));

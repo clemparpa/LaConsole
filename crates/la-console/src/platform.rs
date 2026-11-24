@@ -9,8 +9,7 @@
 //! - Linux/macOS (`cfg(unix)`): behavior unchanged from v1.
 //! - Windows native (`cfg(windows)`): compiles and runs fail-closed — the
 //!   whitelist commands and `resolve()` work, `trusted` is `denied` (no
-//!   shell), `--mode server` stays refused (exit 2, Linux-only already) and
-//!   backend limits stay `denied` (via `backend_limit()`).
+//!   shell) and backend limits stay `denied` (via `backend_limit()`).
 
 use std::ffi::OsString;
 
@@ -77,11 +76,6 @@ pub fn path_to_slash(path: &std::path::Path) -> String {
         Some(s) => s.into_owned(),
         None => path.to_string_lossy().into_owned(),
     }
-}
-
-/// Arguments of a busybox-style group kill: `<busybox> kill -KILL -<pgid>`.
-pub fn group_kill_args(pgid: u32) -> Vec<String> {
-    vec!["kill".to_string(), "-KILL".to_string(), format!("-{pgid}")]
 }
 
 /// Shell script killing a whole process group: `kill -KILL -<pgid>`.
@@ -192,7 +186,6 @@ mod tests {
 
     #[test]
     fn kill_argument_builders_are_stable() {
-        assert_eq!(group_kill_args(1234), ["kill", "-KILL", "-1234"]);
         assert_eq!(
             shell_group_kill_script(1234),
             "kill -KILL -1234 2>/dev/null || true"

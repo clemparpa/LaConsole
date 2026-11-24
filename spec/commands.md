@@ -297,11 +297,9 @@ possible : elle s'applique à la sortie passée à l'identique, via `FileSink`.
   `trusted.toml` pour les commandes qui doivent légitimement toucher hors du
   root. Les arguments commençant par `-` doivent être déclarés dans `flags` ;
   les globs dans les arguments sont toujours refusés.
-- Avant chaque exécution :
-  1. **checksum** (sha256) du fichier de commandes trusted consigné ;
-  2. **scan des changements** depuis la dernière exécution validée (diff du
-     fichier + du code de test associé) pour détecter du code adversarial ;
-  3. exécution uniquement si checksum attendu == checksum constaté et scan OK.
+- Avant chaque exécution : **checksum** (sha256) du fichier de commandes
+  trusted re-vérifié (exécution uniquement si checksum attendu == checksum
+  constaté).
 - **Plus d'`ulimit`** (décision v2 livrée) : le shell exécute `{command} "$@"`
   tel quel. Le timeout wall-clock + kill du **groupe de processus** est appliqué
   par la console elle-même : `timeout_secs` par entrée (défaut
@@ -315,13 +313,6 @@ possible : elle s'applique à la sortie passée à l'identique, via `FileSink`.
   périmètre = revue humaine + checksum) — voir [platforms.md](platforms.md) §4
   et [plugins.md](plugins.md).
 - `help` liste les entrées trusted avec leurs limites déclarées.
-- **Mode serveur** (voir [security.md](security.md)) : la cage ne contient pas de
-  `/bin/sh` système ; si un busybox statique a été stagé
-  (`--sandbox-busybox`), `trusted` s'exécute via `<busybox> sh -c` avec
-  `PATH = /bin:/opt/la-console-tools/bin:/opt/la-console-tools/go/bin`,
-  `HOME=/tmp`, `LD_LIBRARY_PATH` vers les libs stagées et `GOROOT` détecté si
-  une toolchain go est dans `/opt/la-console-tools`. Sans busybox stagé,
-  `trusted` = `denied` (fail-closed).
 
 ## Commande `git` (whitelist, planifiée v2)
 

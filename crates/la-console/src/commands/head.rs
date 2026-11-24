@@ -51,8 +51,6 @@ mod tests {
             secrets: vec![],
             limits,
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
@@ -164,8 +162,6 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         let node = parse_input("head .env", &HashMap::new()).unwrap();
         assert!(matches!(

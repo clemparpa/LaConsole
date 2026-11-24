@@ -17,8 +17,6 @@ fn ctx_for(dir: &tempfile::TempDir) -> Ctx {
         secrets: vec![],
         limits: Limits::default(),
         trusted: None,
-        sandboxed: false,
-        sandbox_shell: None,
     }
 }
 

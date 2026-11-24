@@ -3,7 +3,9 @@
 > Statut : **brouillon soumis à revue**. Objectif : sortir du « Linux-only »
 > implicite du code v1 et définir le **backend de confinement OS par
 > plateforme** : **macOS = Seatbelt**, **Windows = WSL2**, **Linux = landlock
-> (par spawn) + cage userns+chroot (mode serveur, déjà livré)**.
+> par spawn** — tous couverts par la crate **`nono`** (décision actée
+> 2026-11-24, §3). La cage userns+chroot du mode serveur a été **supprimée**
+> (décision 2026-11-24).
 > Principes inchangés : fail-closed, aucun privilège requis,
 > `#![forbid(unsafe_code)]` intact, la console applique elle-même validation,
 > limites et kill (jamais délégué au harnais), et chaque plateforme ajoutée =
@@ -13,15 +15,13 @@
 
 La couche applicative (`resolve()` + sensibles + sinks + bornes) reste la
 barrière principale, portable. Le backend OS ajoute la **defense in depth** :
-même un bug dans `resolve()` ou le parser reste bloqué par l'OS. Le mode
-serveur Linux (v2 étape 1) en est la preuve de concept :
-`unshare --user --map-root-user --mount --root …`.
+même un bug dans `resolve()` ou le parser reste bloqué par l'OS.
 
 | Plateforme | Mode user (poste dev) | Déploiement serveur |
 |---|---|---|
-| Linux | pur Rust + landlock par spawn (optionnel) | cage userns+chroot ✅ livré |
-| macOS | pur Rust + **seatbelt** sur la console et/ou par spawn (`sandbox-exec`) | idem (pas de userns sur macOS ; seatbelt est l'équivalent) |
-| Windows | la console tourne **dans WSL2** (VM utilitaire) | idem (la WSL2 *est* la cage) |
+| Linux | pur Rust + landlock par spawn (via nono) | idem (landlock par spawn, noyau ≥ 5.13) |
+| macOS | pur Rust + **seatbelt** sur la console et/ou par spawn (`sandbox-exec`, via nono) | idem (pas de userns sur macOS ; seatbelt est l'équivalent) |
+| Windows | la console tourne **dans WSL2** (VM utilitaire, via nono) | idem (la WSL2 *est* la cage) |
 
 ## 2. Couche d'abstraction plateforme (`platform.rs`, prévu)
 
@@ -41,8 +41,7 @@ Un seul module connaît l'OS ; le reste du code passe par des traits :
 Inventaire du code Unix-spécifique à abstraire :
 
 - `resolve.rs` : `std::os::unix::fs::MetadataExt` (`st_dev`/`st_ino`) ;
-- `trusted.rs` : `SHELL = /bin/sh`, script `ulimit`, `ExitStatusExt` ;
-- `sandbox.rs` : `unshare` (reste Linux-only, gardé derrière `--mode server`) ;
+- `trusted.rs` : `SHELL = /bin/sh`, script `ulimit` (retiré), `ExitStatusExt` ;
 - tests : `std::os::unix::fs::symlink`, `PermissionsExt`.
 
 ## 3. Backends de confinement par spawn (trusted / plugins)
@@ -74,10 +73,10 @@ généré depuis l'entrée TOML (`trusted.toml`) + les `Limits` globaux.
   applicatifs, pas un 0-day noyau — la couche app reste la barrière fine.
   Hérité par les enfants après exec. Granularité réseau grossière (allow/deny,
   éventuellement restreint à la loopback).
-- **Linux — Landlock** : crate `landlock` officielle dans le helper (bindings
-  pure Rust) ; namespaces userns si le sysctl l'autorise. Le mode serveur
-  garde la cage userns+chroot (backend le plus fort, hors du root les chemins
-  n'existent pas).
+- **Linux — Landlock** : via la crate `nono` dans le helper (Landlock ≥ 5.13,
+  ABI réseau ≥ v4 ; sinon `denied` fail-closed). La cage userns+chroot du mode
+  serveur a été supprimée (décision 2026-11-24) : landlock par spawn est le
+  backend retenu.
 - **Windows — WSL2** : la console entière tourne dans la WSL2 (utility VM
   Hyper-V : noyau Linux dédié, disque ext4 en VHD, réseau NAT) — même patron
   que le mode serveur Linux (`wsl.exe` lance la console avec le root monté).

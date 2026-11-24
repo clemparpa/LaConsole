@@ -242,8 +242,6 @@ mod tests {
             secrets: vec![],
             limits,
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         }
     }
 
@@ -433,8 +431,6 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         let node = parse_input("json a .env", &HashMap::new()).unwrap();
         assert!(matches!(execute(&node, &ctx), Err(ExecError::Denied(_))));
@@ -528,8 +524,6 @@ mod tests {
             secrets: vec!["tok-abc123".to_string()],
             limits: Limits::default(),
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         let node = parse_input("json key data.json", &HashMap::new()).unwrap();
         let out = execute(&node, &ctx).unwrap();

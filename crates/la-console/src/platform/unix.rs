@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 
-use super::{group_kill_args, hardlink_escape_ids, shell_group_kill_script, FileId};
+use super::{hardlink_escape_ids, shell_group_kill_script, FileId};
 
 pub fn canonicalize(path: &Path) -> io::Result<PathBuf> {
     fs::canonicalize(path)
@@ -60,30 +60,20 @@ pub fn set_new_process_group(cmd: &mut Command) {
 }
 
 /// Kills the child (always) and then its whole process group (best-effort
-/// via the same shell used to spawn it, since the child was spawned with
-/// `process_group(0)` so pgid == child pid).
-pub fn kill_process_tree(child: &mut Child, cage_shell: Option<&str>) {
+/// via the shell, since the child was spawned with `process_group(0)` so
+/// pgid == child pid).
+pub fn kill_process_tree(child: &mut Child) {
     let _ = child.kill();
-    let pgid = child.id();
-    let result = match cage_shell {
-        Some(busybox) => Command::new(busybox)
-            .args(group_kill_args(pgid))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status(),
-        None => match shell() {
-            Some(sh) => Command::new(sh)
-                .arg("-c")
-                .arg(shell_group_kill_script(pgid))
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status(),
-            None => return,
-        },
+    let Some(sh) = shell() else {
+        return;
     };
-    let _ = result;
+    let _ = Command::new(sh)
+        .arg("-c")
+        .arg(shell_group_kill_script(child.id()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 pub fn exit_code(status: &ExitStatus) -> u16 {

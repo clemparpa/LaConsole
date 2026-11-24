@@ -15,10 +15,9 @@ Un seul module connaît l'OS ; tout le reste du code passe par ses fonctions.
   ubuntu + macOS ; tous les tests existants doivent passer sans modification de
   sémantique.
 - **Windows natif** : le code **compile** et tourne **fail-closed** là où il n'y a
-  pas de backend : `trusted` → `denied` (pas de shell), `--mode server` → exit 2
-  (déjà le cas hors Linux), limites backend de `trusted.toml` → `denied` (déjà le
-  cas via `backend_limit()`). Les commandes whitelist in-process et `resolve()`
-  fonctionnent normalement.
+  pas de backend : `trusted` → `denied` (pas de shell), limites backend de
+  `trusted.toml` → `denied` (déjà le cas via `backend_limit()`). Les commandes
+  whitelist in-process et `resolve()` fonctionnent normalement.
 - **Windows réel = WSL2** (la console tourne dans la VM, build Linux inchangé
   dedans) : hors scope de cette PR — voir [platforms.md](platforms.md) §3
   (phase 4) pour le lanceur `wsl.exe`, la traduction des chemins et la fermeture
@@ -35,14 +34,13 @@ plugins, commandes `git` whitelist.
 | 2 | `canonicalize` verbatim `\\?\` | `fs::canonicalize` | `canonicalize(&Path) -> io::Result<PathBuf>` | `std::fs::canonicalize` | `dunce::canonicalize` |
 | 3 | Composants Windows (`C:`, `\`) | `normalize()` ignore `Component::Prefix` — `resolve.rs:52-66` | `looks_like_windows_path(&str) -> bool` ; `normalize()` rejette fail-closed | rejet de tout `\` (jamais un séparateur sur unix) + des `C:` | rejet de tout `:` (drive `C:…` + NTFS ADS `file:stream`) et des préfixes UNC `\\…` ; les relatifs natifs `src\a.rs` restent valides |
 | 4 | Comparaison de chemins / casse | `starts_with` byte-à-byte | comparer uniquement des chemins passés par `platform::canonicalize` (casse réelle du disque) | inchangé | idem via `dunce` |
-| 5 | Shell trusted | `SHELL = "/bin/sh"` — `trusted.rs:15` | `shell() -> Option<&'static str>` | `Some("/bin/sh")` (cage : busybox, inchangé) | `None` → `trusted` denied |
+| 5 | Shell trusted | `SHELL = "/bin/sh"` — `trusted.rs:15` | `shell() -> Option<&'static str>` | `Some("/bin/sh")` | `None` → `trusted` denied |
 | 6 | Env minimal / `PATH` (`:` vs `;`) | `DEFAULT_PATH_ENV` en dur — `trusted.rs:16` | `default_path_entries() -> Vec<PathBuf>` + `env::join_paths` | idem | chemins Windows, `;` géré par std |
 | 7 | Nouveau groupe de processus | `process_group(0)` — `trusted.rs:440-443` | `set_new_process_group(&mut Command)` | `CommandExt::process_group(0)` | no-op (pas de pgid POSIX) |
-| 8 | Kill de l'arbre au timeout | `kill_group_unix` : `kill -KILL -<pgid>` via le shell — `trusted.rs:531-552` | `kill_process_tree(&mut Child, shell: Option<&str>)` ; `child.kill()` **toujours** exécuté en premier | kill du pgid | `taskkill /T /F /PID <pid>` (spawn, best-effort) |
+| 8 | Kill de l'arbre au timeout | `kill_group_unix` : `kill -KILL -<pgid>` via le shell — `trusted.rs:531-552` | `kill_process_tree(&mut Child)` ; `child.kill()` **toujours** exécuté en premier | kill du pgid via le shell | `taskkill /T /F /PID <pid>` (spawn, best-effort) |
 | 9 | Exit code | `128+signal` via `ExitStatusExt` — `trusted.rs:554-560` | `exit_code(&ExitStatus) -> u16` | code, ou `128+signal` | `code().unwrap_or(1)` tronqué (documenté ; aucun processus exécuté en phase 1) |
 | 10 | Symlinks de test | `std::os::unix::fs::symlink` — `tests/evasion.rs:3`, `resolve.rs:154`, `commands/grep.rs:1579,1736` | `testutil::symlink(orig, link)` | `fs::symlink` | `symlink_file` / `symlink_dir` ; skip gracieux si privilège absent |
-| 11 | Modes unix 0o755/0o555 | `PermissionsExt` — `sandbox.rs`, test fake busybox `trusted.rs:800` | `testutil::set_exec_mode(&Path)` | `from_mode(0o755)` | no-op |
-| 12 | `--mode server` (`unshare`) | déjà `#[cfg(target_os = "linux")]`, refusé ailleurs | **inchangé** | cage userns+chroot | exit 2 fail-closed (déjà en place) |
+| 11 | Modes unix 0o755/0o555 (tests) | `PermissionsExt` — tests | `testutil::set_exec_mode(&Path)` | `from_mode(0o755)` | no-op |
 
 Notes :
 
@@ -111,8 +109,7 @@ pub fn exit_code(status: &std::process::ExitStatus) -> u16;
 |---|---|
 | `lib.rs` | `pub mod platform;` |
 | `resolve.rs` | `MetadataExt` → `platform::{file_id, hardlink_escape}` ; `fs::canonicalize` → `platform::canonicalize` ; `normalize()` rejette `Component::Prefix` et toute entrée `looks_like_windows_path` |
-| `trusted.rs` | `SHELL` → `platform::shell()` (`None` → denied) ; `process_group` → `platform::set_new_process_group` ; `kill_process_group`/`kill_group_unix` → `platform::kill_process_tree` ; `exit_code` → `platform::exit_code` ; `DEFAULT_PATH_ENV` → `env::join_paths(platform::default_path_entries())` ; test fake busybox → `testutil::set_exec_mode` |
-| `sandbox.rs` | **inchangé** (déjà `cfg(target_os = "linux")`) |
+| `trusted.rs` | `SHELL` → `platform::shell()` (`None` → denied) ; `process_group` → `platform::set_new_process_group` ; `kill_process_group`/`kill_group_unix` → `platform::kill_process_tree` ; `exit_code` → `platform::exit_code` ; `DEFAULT_PATH_ENV` → `env::join_paths(platform::default_path_entries())` |
 | `tests/evasion.rs`, tests de `resolve.rs`, tests de `commands/grep.rs` | `std::os::unix::fs::symlink` → `platform::testutil::symlink` |
 
 ## 6. Stratégie de tests
@@ -128,7 +125,7 @@ pub fn exit_code(status: &std::process::ExitStatus) -> u16;
   fonctionnent ; si la création échoue (permission), le test **skippe**
   (uniquement sur Windows, jamais silencieusement sur unix).
 - **e2e nouveaux scénarios Windows** : `trusted x` → `denied` (pas de shell) ;
-  `--mode server` → exit 2 ; `resolve()` refuse `C:\foo`, `a\b`, `..` →
+  `resolve()` refuse `C:\foo`, `a\b`, `..` →
   `tests/evasion.rs` / `tests/e2e.rs`.
 - **proptest** : l'invariant « `resolve()` ne renvoie jamais rien hors du root »
   doit passer sur les 3 OS (cœur portable).
@@ -143,8 +140,7 @@ pub fn exit_code(status: &std::process::ExitStatus) -> u16;
   même PR que `platform.rs`, pour garder la CI verte à chaque commit.
 - Optionnel : `cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc`
   sur le runner ubuntu pour attraper tôt les divergences de compilation.
-- Le job `busybox-static` reste ubuntu-only (`if: matrix.os == 'ubuntu-latest'`,
-  déjà en place). `fmt` / `clippy` / `deny`+`audit` : inchangés (ubuntu).
+- `fmt` / `clippy` / `deny`+`audit` : inchangés (ubuntu).
 - Nightly (fuzz long + mutants) : inchangé, ubuntu-only. Garde-fou anti-fork :
   inchangé, s'applique à tous les jobs.
 
@@ -160,7 +156,7 @@ Une seule PR, testable, CI verte sur les 3 OS :
 
 **Testable** : CI verte ubuntu + macOS + Windows ; sur unix tous les tests
 existants passent sans changement de sémantique ; sur Windows, whitelist +
-`resolve()` fonctionnent et `trusted` / `--mode server` / limites backend sont
+`resolve()` fonctionnent et `trusted` / limites backend sont
 refusés fail-closed.
 
 Les phases suivantes restent celles de [platforms.md](platforms.md) §5 : backend

@@ -1,6 +1,4 @@
 use clap::Parser;
-use la_console::sandbox::{Mode, SandboxImage};
-use std::ffi::OsString;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -12,10 +10,6 @@ use std::path::PathBuf;
 struct Cli {
     #[arg(long, value_name = "PATH")]
     root: PathBuf,
-    #[arg(long, value_enum, value_name = "MODE", default_value = "user")]
-    mode: Mode,
-    #[arg(long, hide = true)]
-    inside_sandbox: bool,
     #[arg(long, value_name = "N", default_value_t = la_console::commands::DEFAULT_COMMAND_TIMEOUT_SECS)]
     timeout_secs: u64,
     #[arg(long, value_name = "N")]
@@ -30,45 +24,6 @@ struct Cli {
     /// is masked as `***` in outputs and before any on-disk write.
     #[arg(long, value_name = "PATH")]
     secrets_file: Option<PathBuf>,
-    /// Server mode only: host path to a static busybox staged into the cage
-    /// so `trusted` commands can run via `busybox sh`.
-    #[arg(long, value_name = "PATH")]
-    sandbox_busybox: Option<PathBuf>,
-    /// Optional sha256 pin (hex) of the busybox binary.
-    #[arg(long, value_name = "HEX")]
-    sandbox_busybox_sha256: Option<String>,
-    /// Server mode only: host directory (git, go toolchain, ...) copied into
-    /// the cage at /opt/la-console-tools.
-    #[arg(long, value_name = "DIR")]
-    sandbox_tools_dir: Option<PathBuf>,
-}
-
-fn forward_args(cli: &Cli) -> Vec<OsString> {
-    let mut args: Vec<OsString> = vec![
-        OsString::from("--timeout-secs"),
-        OsString::from(cli.timeout_secs.to_string()),
-    ];
-    if let Some(n) = cli.max_output_bytes {
-        args.push(OsString::from("--max-output-bytes"));
-        args.push(OsString::from(n.to_string()));
-    }
-    if let Some(p) = &cli.trusted_file {
-        args.push(OsString::from("--trusted-file"));
-        args.push(p.as_os_str().to_owned());
-    }
-    if let Some(h) = &cli.trusted_sha256 {
-        args.push(OsString::from("--trusted-sha256"));
-        args.push(OsString::from(h));
-    }
-    if let Some(p) = &cli.sensibles_file {
-        args.push(OsString::from("--sensibles-file"));
-        args.push(p.as_os_str().to_owned());
-    }
-    if let Some(p) = &cli.secrets_file {
-        args.push(OsString::from("--secrets-file"));
-        args.push(p.as_os_str().to_owned());
-    }
-    args
 }
 
 fn main() {
@@ -77,28 +32,6 @@ fn main() {
         eprintln!("error: cannot resolve root {}: {err}", cli.root.display());
         std::process::exit(1);
     }
-    let forward = forward_args(&cli);
-    let image = SandboxImage {
-        busybox: cli.sandbox_busybox.clone(),
-        busybox_sha256: cli.sandbox_busybox_sha256.clone(),
-        tools_dir: cli.sandbox_tools_dir.clone(),
-    };
-    if let Err(err) =
-        la_console::sandbox::gate(cli.mode, cli.inside_sandbox, &cli.root, &forward, &image)
-    {
-        eprintln!("error: {err}");
-        std::process::exit(2);
-    }
-    let sandbox_shell = if cli.inside_sandbox {
-        la_console::sandbox::cleanup_staged_bin();
-        if let Err(err) = la_console::sandbox::protect_cage_tools() {
-            eprintln!("error: {err}");
-            std::process::exit(2);
-        }
-        la_console::sandbox::cage_shell().map(String::from)
-    } else {
-        None
-    };
     let opts = la_console::console::Options {
         timeout_secs: cli.timeout_secs,
         max_output_bytes: cli.max_output_bytes,
@@ -106,8 +39,6 @@ fn main() {
         trusted_sha256: cli.trusted_sha256,
         sensibles_file: cli.sensibles_file,
         secrets_file: cli.secrets_file,
-        sandboxed: cli.inside_sandbox,
-        sandbox_shell,
     };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

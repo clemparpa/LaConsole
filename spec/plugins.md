@@ -124,8 +124,8 @@ network = "none"                      # none (défaut) | loopback | proxy (allow
 - Schéma strict (`deny_unknown_fields`, crate `toml` épinglée en direct,
   fail-closed) ; nom `^[A-Za-z_][A-Za-z0-9_-]*$`, doublon = refus total (le
   parseur TOML refuse déjà les tables dupliquées).
-- Détection par extension : `.toml` = v2 ; `.txt` = format v1 (compat lecture
-  le temps de la migration).
+- Détection par extension : `.toml` seul format accepté (le `.txt` v1 est
+  retiré).
 - `help` liste les entrées avec leurs limites.
 
 ## Confinement : abstraction `Sandbox`, backends OS natifs (priorité macOS)
@@ -140,9 +140,7 @@ le confinement **dans l'enfant juste avant exec** — jamais dans le harness
   publique, zéro FFI/`unsafe` chez nous ; même approche que Codex/Chrome).
   Réseau : `deny network*`, ou loopback seul vers le proxy à allowlist
   (pattern Claude Code) ;
-- **Linux** : crate `landlock` officielle (+ `seccompiler` optionnel) dans le
-  helper ; namespaces via userns si le sysctl l'autorise ; le mode serveur
-  garde la cage userns+chroot (backend le plus fort) ;
+- **Linux** : landlock (noyau ≥ 5.13) dans le helper, via la crate `nono` ;
 - **Windows** : la console entière tourne dans une **WSL2** (VM utilitaire) —
   même patron que le mode serveur Linux ; ponts host (interop `.exe`,
   `/mnt/c`, réseau NAT, socket docker) désactivés sauf déclaration explicite ;
@@ -162,8 +160,7 @@ elle-même. Voir [platforms.md](platforms.md) §4.
 
 **Fail-closed par spawn** : backend inapplicable (vieux noyau, sandbox-exec
 absent…) → `denied`, jamais de mode dégradé. **Aucun privilège requis** (jamais
-de root). La cage userns+chroot du mode serveur reste le backend le plus fort
-pour les déploiements serveur (hors du root, les chemins n'existent pas).
+de root).
 
 Règles d'exécution communes : argv reconstruit sans shell, args validés contre
 le schéma de la sous-commande, env réduit, `cwd = root`, stdin null, sortie via
@@ -181,9 +178,9 @@ masquage — jamais délégué au harnais, fail-closed même si le harnais ment.
 
 1. Ce document, revu et validé (PR #29) ;
 2. ✅ (cette PR) Le delta composabilité : pipe `trusted → whitelist` borné (tête de pipe uniquement) ;
-3. `sandbox.rs` (helper arg0, backends Seatbelt/Landlock, fail-closed) puis
-   `plugins.rs` (manifeste JSON strict, spawn sandboxé) ; `help` liste les
-   plugins déclarés ;
+3. `src/sandbox_backend.rs` (helper arg0 `__sandbox_helper`, backend `nono`,
+   fail-closed) puis `plugins.rs` (manifeste JSON strict, spawn sandboxé) ;
+   `help` liste les plugins déclarés ;
 4. ✅ Manifeste `trusted.toml` + retrait des `ulimit` livrés : `timeout_secs`
    et `no_path_check` appliqués par la console (kill du groupe de processus),
    limites backend (`max_write_bytes`/`mem_bytes`/`cpus`/`network`) refusées
