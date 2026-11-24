@@ -32,6 +32,9 @@ pub struct Options {
     pub trusted_file: Option<PathBuf>,
     pub trusted_sha256: Option<String>,
     pub sensibles_file: Option<PathBuf>,
+    /// Known secrets (one per line) masked as `***` in every output and
+    /// before any on-disk write.
+    pub secrets_file: Option<PathBuf>,
     /// True when running inside the server-mode sandbox (userns + chroot).
     pub sandboxed: bool,
     /// In-cage busybox path (e.g. "/bin/busybox") when one was staged with
@@ -47,6 +50,7 @@ impl Default for Options {
             trusted_file: None,
             trusted_sha256: None,
             sensibles_file: None,
+            secrets_file: None,
             sandboxed: false,
             sandbox_shell: None,
         }
@@ -63,6 +67,10 @@ pub fn run<R: BufRead, W: Write>(
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
     let sensibles = match &opts.sensibles_file {
         Some(path) => crate::sink::load_sensibles(path)?,
+        None => Vec::new(),
+    };
+    let secrets = match &opts.secrets_file {
+        Some(path) => crate::sink::load_secrets(path)?,
         None => Vec::new(),
     };
     // In server mode the registry is loaded like in user mode; trusted
@@ -91,7 +99,7 @@ pub fn run<R: BufRead, W: Write>(
     let ctx = Ctx {
         resolver,
         sensibles,
-        secrets: Vec::new(),
+        secrets,
         limits,
         trusted,
         sandboxed: opts.sandboxed,
@@ -101,6 +109,9 @@ pub fn run<R: BufRead, W: Write>(
     loop {
         line.clear();
         if input.read_line(&mut line)? == 0 {
+            if let Some(trusted) = &ctx.trusted {
+                trusted.cleanup_home();
+            }
             return Ok(());
         }
         let response = handle_line(&line, &ctx);

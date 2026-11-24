@@ -7,7 +7,7 @@ qui la pilote). L'isolation par processus garantit qu'un crash de la console
 (ex. lecture d'un très gros fichier) n'affecte pas l'appelant.
 
 ```
-la-console --root <chemin> [--mode user|server] [--max-output-bytes N] [--timeout-secs N] [--trusted-file <chemin>] [--sensibles-file <chemin>] [--sandbox-busybox <chemin> [--sandbox-busybox-sha256 <hex>]] [--sandbox-tools-dir <dir>]
+la-console --root <chemin> [--mode user|server] [--max-output-bytes N] [--timeout-secs N] [--trusted-file <chemin>] [--sensibles-file <chemin>] [--secrets-file <chemin>] [--sandbox-busybox <chemin> [--sandbox-busybox-sha256 <hex>]] [--sandbox-tools-dir <dir>]
 ```
 
 - `--root` : répertoire racine du confinement, résolu en chemin canonique
@@ -23,6 +23,11 @@ la-console --root <chemin> [--mode user|server] [--max-output-bytes N] [--timeou
 - `--trusted-file` : chemin du fichier de commandes trusted (voir
   [commands.md](commands.md)). Optionnel.
 - `--sensitives-file` : chemin du fichier de regex de fichiers sensibles.
+  Optionnel.
+- `--secrets-file` : chemin du fichier des secrets connus (une ligne par
+  secret, commentaires `#`, UTF-8 strict, borné à 1 MiO, chargé au démarrage ;
+  illisible = exit 1, fail-closed). Toute occurrence d'un secret connu est
+  masquée (`***`) dans la réponse JSON et avant toute écriture sur disque.
   Optionnel.
 - `--sandbox-busybox` : mode serveur uniquement — chemin d'un busybox
   **statique** (vérifié ELF + `ldd`) stagé dans la cage en `/bin/busybox` pour

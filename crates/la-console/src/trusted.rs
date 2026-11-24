@@ -110,6 +110,9 @@ pub struct TrustedRegistry {
     expected_sha256: Option<String>,
     entries: HashMap<String, TrustedEntry>,
     home: PathBuf,
+    /// True when `home` is a `tempfile`-created directory outside the root
+    /// that this process owns and must remove at shutdown.
+    home_is_temp: bool,
 }
 
 impl TrustedRegistry {
@@ -128,12 +131,13 @@ impl TrustedRegistry {
                 ));
             }
         };
-        let home = make_home(root, sandboxed)?;
+        let (home, home_is_temp) = make_home(root, sandboxed)?;
         Ok(Self {
             path: path.to_path_buf(),
             expected_sha256,
             entries,
             home,
+            home_is_temp,
         })
     }
 
@@ -141,10 +145,17 @@ impl TrustedRegistry {
         &self.home
     }
 
+    /// Removes the `tempfile`-created HOME at shutdown (best-effort). The
+    /// in-cage `/tmp` HOME of server mode is left alone.
+    pub fn cleanup_home(&self) {
+        if self.home_is_temp {
+            let _ = std::fs::remove_dir_all(&self.home);
+        }
+    }
+
     fn current_sha256(&self) -> Result<String, TrustedError> {
         let bytes = std::fs::read(&self.path)?;
-        let digest = Sha256::digest(&bytes);
-        Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+        Ok(sha256_hex(&bytes))
     }
 
     /// Re-reads the trusted file and compares its sha256 against the expected
@@ -174,8 +185,7 @@ impl TrustedRegistry {
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn is_valid_name(name: &str) -> bool {
@@ -322,20 +332,26 @@ pub fn command_timeout_secs(cmd: &SimpleCommand, ctx: &Ctx) -> u64 {
 /// cannot persist anything under the confined perimeter via $HOME. Inside the
 /// server-mode cage the whole filesystem is the root, so HOME is `/tmp`
 /// (already inside the confined perimeter, which the chroot enforces).
-fn make_home(root: &Path, sandboxed: bool) -> Result<PathBuf, TrustedError> {
+/// Returns the HOME for trusted shells and whether we own it as a temporary
+/// directory (to remove at shutdown). `tempfile` creates it with an
+/// unpredictable name, `O_EXCL` and 0700 permissions: a predictable name
+/// under a shared `/tmp` would let another local user pre-create the path
+/// (e.g. as a symlink) and receive the trusted shell's `$HOME`.
+fn make_home(root: &Path, sandboxed: bool) -> Result<(PathBuf, bool), TrustedError> {
     if sandboxed {
         let home = PathBuf::from("/tmp");
         std::fs::create_dir_all(&home)?;
-        return Ok(home);
+        return Ok((home, false));
     }
-    let home = std::env::temp_dir().join(format!("la-console-home-{}", std::process::id()));
-    std::fs::create_dir_all(&home)?;
+    let dir = tempfile::tempdir()?;
+    let home = dir.keep();
     let canonical_home = platform::canonicalize(&home)?;
     let canonical_root = platform::canonicalize(root)?;
     if canonical_home.starts_with(&canonical_root) {
+        let _ = std::fs::remove_dir_all(&home);
         return Err(TrustedError::HomeInsideRoot);
     }
-    Ok(canonical_home)
+    Ok((canonical_home, true))
 }
 
 fn trusted_to_exec(err: TrustedError) -> ExecError {
@@ -458,10 +474,10 @@ fn exec_trusted(
         command
             .env("PATH", crate::sandbox::CAGE_TRUSTED_PATH)
             .env("LD_LIBRARY_PATH", crate::sandbox::CAGE_LIBS_DIR);
-        let tools = crate::sandbox::CAGE_TOOLS_DIR;
-        if Path::new(&format!("{tools}/go/bin/go")).exists() {
-            command.env("GOROOT", format!("{tools}/go"));
-        } else if Path::new(&format!("{tools}/bin/go")).exists() {
+        let tools = Path::new(crate::sandbox::CAGE_TOOLS_DIR);
+        if tools.join("go").join("bin").join("go").exists() {
+            command.env("GOROOT", tools.join("go"));
+        } else if tools.join("bin").join("go").exists() {
             command.env("GOROOT", tools);
         }
     } else {

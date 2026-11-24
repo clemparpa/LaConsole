@@ -101,6 +101,7 @@ sur disque, et empêcher qu'une sortie contamine l'interprétation côté appela
 
 ## Secrets
 
+- La liste des secrets connus est fournie par l'opérateur via `--secrets-file <chemin>` : une ligne par secret, commentaires `#`, UTF-8 strict, fichier borné (1 MiO) et chargé au démarrage (illisible = exit 1, fail-closed).
 - Les secrets (ex. token d'app Git) ne transitent **jamais** par l'env du shell
   de la console (une commande trusted pourrait faire `printenv`), ni en argument
   de ligne de commande (visible dans `ps`), ni dans un fichier lisible par
