@@ -66,15 +66,17 @@ pub fn looks_like_windows_path(input: &str) -> bool {
     }
 }
 
-/// Renders a path with `/` separators on every OS: stable output contract for
-/// the JSON protocol (and safe to re-feed to `resolve()`, which accepts `/`
-/// everywhere). On unix a literal backslash inside a component is preserved
-/// (`components()` does not split on `\` there).
+/// Renders a path with `/` separators on every OS (via `path-slash`): stable
+/// output contract for the JSON protocol, and safe to re-feed to `resolve()`,
+/// which accepts `/` everywhere. On unix a literal backslash inside a
+/// component is preserved (`\` is not a separator there). Non-UTF-8 paths
+/// fall back to a lossy rendering.
 pub fn path_to_slash(path: &std::path::Path) -> String {
-    path.components()
-        .map(|c| c.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
+    use path_slash::PathExt;
+    match path.to_slash() {
+        Some(s) => s.into_owned(),
+        None => path.to_string_lossy().into_owned(),
+    }
 }
 
 /// Arguments of a busybox-style group kill: `<busybox> kill -KILL -<pgid>`.

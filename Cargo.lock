@@ -898,10 +898,12 @@ checksum = "a4933f3f57a8e9d9da04db23fb153356ecaf00cbd14aee46279c33dc80925c37"
 name = "la-console"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "clap",
  "dunce",
  "grep",
  "ignore",
+ "path-slash",
  "proptest",
  "regex",
  "reqwest",
@@ -912,6 +914,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+ "walkdir",
  "wax",
  "winapi-util",
 ]
@@ -1014,6 +1017,12 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "path-slash"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e91099d4268b0e11973f036e885d652fb0b21fedcf69738c627f94db6a44f42"
 
 [[package]]
 name = "percent-encoding"

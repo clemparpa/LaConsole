@@ -12,7 +12,7 @@ la-console/
     la-console/       # la fausse console (binaire + lib)
       Cargo.toml
       src/
-        main.rs       # CLI clap : --root, bornes, --mode, image de cage (--sandbox-busybox/--sandbox-tools-dir) ; spawn du protocole JSON
+        main.rs       # CLI clap : --root, bornes, --mode, --trusted-file/--trusted-sha256, --sensibles-file, --secrets-file, image de cage (--sandbox-busybox/--sandbox-tools-dir) ; spawn du protocole JSON
         lib.rs        # #![forbid(unsafe_code)]
         console.rs    # boucle protocole JSON stdin/stdout, synchrone (std::io, une requete a la fois)
         parse.rs      # parser shell cadré : shell-words + opérateurs whitelistés -> arbre de commandes
@@ -61,8 +61,11 @@ la-console/
 | CLI | `clap` |
 | Tokenisation shell (quotes, espaces) | `shell-words` |
 | Globs (`*.rs`, `**/*.md`) | `wax` (moteur de glob de ripgrep) |
+| Masquage multi-secrets (`***` en sortie et avant écriture disque) | `aho-corasick` (déjà transitif via `regex`, leftmost-longest) |
+| Parcours/copie récursif du staging cage (liens non suivis, symlinks refusés fail-closed) | `walkdir` (déjà transitif via `ignore`) |
+| Rendu des chemins en séparateurs `/` (contrat JSON, `platform::path_to_slash`) | `path-slash` |
 | HTTP whitelisté (localhost uniquement) | `reqwest` + rustls |
-| Tests (répertoires temporaires) | `tempfile` (dev-dependency) |
+| Répertoire temporaire (HOME des shells trusted en mode user, supprimé à la sortie ; aussi utilisé par les tests) | `tempfile` |
 | Property-based testing | `proptest` (dev-dependency) |
 
 Notes :

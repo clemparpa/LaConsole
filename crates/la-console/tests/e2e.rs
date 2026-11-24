@@ -1196,3 +1196,62 @@ fn e2e_trusted_is_denied_without_shell_on_windows() {
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }
+
+#[test]
+fn e2e_secrets_file_masks_known_secrets_in_output_and_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let secrets_dir = tempfile::tempdir().unwrap();
+    let secrets_file = secrets_dir.path().join("secrets.txt");
+    std::fs::write(&secrets_file, "# known secrets\ntok-abc123\n").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_la-console"))
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--secrets-file")
+        .arg(&secrets_file)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(
+        stdin,
+        r#"{{"op": "exec", "cmd": "echo leak tok-abc123 now"}}"#
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        r#"{{"op": "exec", "cmd": "echo leak tok-abc123 now > out.txt"}}"#
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    let out = resp["stdout"].as_str().unwrap();
+    assert!(out.contains("***"), "secret not masked in stdout: {out}");
+    assert!(
+        !out.contains("tok-abc123"),
+        "secret leaked in stdout: {out}"
+    );
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(resp["ok"], true);
+    let on_disk = std::fs::read_to_string(dir.path().join("out.txt")).unwrap();
+    assert!(
+        on_disk.contains("***"),
+        "secret not masked on disk: {on_disk}"
+    );
+    assert!(
+        !on_disk.contains("tok-abc123"),
+        "secret persisted on disk: {on_disk}"
+    );
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}

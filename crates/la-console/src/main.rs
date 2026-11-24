@@ -26,6 +26,10 @@ struct Cli {
     trusted_sha256: Option<String>,
     #[arg(long, value_name = "PATH")]
     sensibles_file: Option<PathBuf>,
+    /// File of known secrets (one per line, `#` comments): every occurrence
+    /// is masked as `***` in outputs and before any on-disk write.
+    #[arg(long, value_name = "PATH")]
+    secrets_file: Option<PathBuf>,
     /// Server mode only: host path to a static busybox staged into the cage
     /// so `trusted` commands can run via `busybox sh`.
     #[arg(long, value_name = "PATH")]
@@ -58,6 +62,10 @@ fn forward_args(cli: &Cli) -> Vec<OsString> {
     }
     if let Some(p) = &cli.sensibles_file {
         args.push(OsString::from("--sensibles-file"));
+        args.push(p.as_os_str().to_owned());
+    }
+    if let Some(p) = &cli.secrets_file {
+        args.push(OsString::from("--secrets-file"));
         args.push(p.as_os_str().to_owned());
     }
     args
@@ -97,6 +105,7 @@ fn main() {
         trusted_file: cli.trusted_file,
         trusted_sha256: cli.trusted_sha256,
         sensibles_file: cli.sensibles_file,
+        secrets_file: cli.secrets_file,
         sandboxed: cli.inside_sandbox,
         sandbox_shell,
     };

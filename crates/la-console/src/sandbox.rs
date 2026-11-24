@@ -355,7 +355,8 @@ fn install_applets(bin_dir: &Path, applets: &[String]) -> Result<(), String> {
 /// Copies the operator-provided tools dir (git, go, ...) into the cage at
 /// `CAGE_TOOLS_DIR`, then stages the dynamic deps of every ELF file found in
 /// the copy (loader at its absolute in-cage path, libs in the staged libs
-/// dir). Symlinks are followed by `fs::copy`; a symlink loop fails closed.
+/// dir). Symlinks and special files are refused (fail-closed) and the walk
+/// never follows links, so a symlink loop cannot hang the staging.
 #[cfg(target_os = "linux")]
 fn stage_tools_dir(tools_dir: &Path, root: &Path) -> Result<(), String> {
     const MAX_TOOL_FILES: usize = 20_000;
@@ -384,54 +385,51 @@ fn stage_tools_dir(tools_dir: &Path, root: &Path) -> Result<(), String> {
 }
 
 /// Recursive copy preserving permissions; returns the number of files copied.
+/// Fail-closed: only plain files and directories are staged — symlinks and
+/// special files are refused, and the walk does not follow links.
 #[cfg(target_os = "linux")]
 fn copy_dir_recursive(src: &Path, dst: &Path, max_files: usize) -> Result<usize, String> {
-    let mut count = 0usize;
     std::fs::create_dir_all(dst)
         .map_err(|err| format!("cannot create {}: {err}", dst.display()))?;
-    for entry in
-        std::fs::read_dir(src).map_err(|err| format!("cannot read {}: {err}", src.display()))?
-    {
-        let entry =
-            entry.map_err(|err| format!("cannot read entry in {}: {err}", src.display()))?;
+    let mut count = 0usize;
+    for entry in walkdir::WalkDir::new(src).follow_links(false).min_depth(1) {
+        let entry = entry.map_err(|err| format!("cannot walk {}: {err}", src.display()))?;
         let path = entry.path();
-        let target = dst.join(entry.file_name());
-        let meta = entry
-            .metadata()
-            .map_err(|err| format!("cannot stat {}: {err}", path.display()))?;
-        if meta.is_dir() {
-            count += copy_dir_recursive(&path, &target, max_files - count)?;
-        } else {
+        let target = dst.join(path.strip_prefix(src).unwrap_or_else(|_| Path::new("")));
+        let file_type = entry.file_type();
+        if file_type.is_symlink() {
+            return Err(format!("symlink refused in tools dir: {}", path.display()));
+        }
+        if file_type.is_dir() {
+            std::fs::create_dir_all(&target)
+                .map_err(|err| format!("cannot create {}: {err}", target.display()))?;
+        } else if file_type.is_file() {
             count += 1;
             if count > max_files {
                 return Err(format!("tools dir exceeds {max_files} files"));
             }
-            std::fs::copy(&path, &target)
+            std::fs::copy(path, &target)
                 .map_err(|err| format!("cannot copy {}: {err}", path.display()))?;
+        } else {
+            return Err(format!(
+                "special file refused in tools dir: {}",
+                path.display()
+            ));
         }
     }
     Ok(count)
 }
 
-/// All regular files under `dir`, depth-first.
+/// All regular files under `dir`, depth-first, without following symlinks.
 #[cfg(target_os = "linux")]
 fn walk_files(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&current) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.is_file() {
-                out.push(path);
-            }
-        }
-    }
-    out
+    walkdir::WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .collect()
 }
 
 /// True when the file starts with the ELF magic.
@@ -447,11 +445,9 @@ fn is_elf(path: &Path) -> bool {
 
 #[cfg(target_os = "linux")]
 fn sha256_file(path: &Path) -> Result<String, String> {
-    use sha2::Digest;
     let bytes =
         std::fs::read(path).map_err(|err| format!("cannot read {}: {err}", path.display()))?;
-    let digest = sha2::Sha256::digest(&bytes);
-    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(crate::trusted::sha256_hex(&bytes))
 }
 
 #[cfg(target_os = "linux")]
@@ -694,6 +690,21 @@ mod tests {
         std::fs::write(&f, b"x").unwrap();
         let root = tempfile::tempdir().unwrap();
         assert!(stage_tools_dir(&f, root.path()).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stage_tools_dir_refuses_symlinks_fail_closed() {
+        let tools = tempfile::tempdir().unwrap();
+        std::fs::write(tools.path().join("real.txt"), b"x").unwrap();
+        let link = tools.path().join("link.txt");
+        assert!(crate::platform::testutil::symlink_or_skip(
+            &tools.path().join("real.txt"),
+            &link
+        ));
+        let root = tempfile::tempdir().unwrap();
+        let err = stage_tools_dir(tools.path(), root.path()).unwrap_err();
+        assert!(err.contains("symlink refused"), "got: {err}");
     }
 
     #[cfg(target_os = "linux")]
