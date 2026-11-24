@@ -40,49 +40,15 @@ sur disque, et empêcher qu'une sortie contamine l'interprétation côté appela
 - **v1 : logique pur Rust** (`resolve()` + canonicalize + tests d'évasion en CI),
   marche partout sans privilèges. Un bug dans `resolve()` = évasion totale, donc
   tests agressifs obligatoires.
-- **v2 (déploiement serveur) : `--mode server`, Linux uniquement** — user namespace
-  non privilégié + chroot par-dessus (defense in depth : le noyau bloque même
-  en cas de bug applicatif). Le binaire se re-exec lui-même via
-  `unshare --user --map-root-user --mount --root <root> --wd /` (le binaire et
-  ses dépendances dynamiques sont d'abord copiés dans la cage, puis nettoyés
-  au démarrage ; un binaire statique n'en a pas besoin). L'API reste identique,
-  seul le lanceur change : dans la cage, `--root /`. Jamais de root global au
-  lancement. Sur macOS/autre, `--mode server` est refusé (exit 2) et `--mode user`
-  reste le défaut.
-  - **Déploiement** : lancer la console comme l'utilisateur propriétaire du
-    `root` (les permissions Unix/DAC s'appliquent toujours dans le user
-    namespace : un fichier appartenant à un autre utilisateur reste illisible,
-    même dans la cage). Ne jamais lancer en root global.
-  - **Mini-image de cage (v2 étape 2)** : l'opérateur peut équiper la cage via
-    `--sandbox-busybox <PATH>` (busybox **statique**, vérifié ELF + `ldd`,
-    épinglable par `--sandbox-busybox-sha256`) et `--sandbox-tools-dir <DIR>`
-    (outillage ex. git + go, copié en `/opt/la-console-tools` avec les deps
-    dynamiques de chaque ELF). Le busybox est placé en `/bin/busybox` avec un
-    symlink par applet dans `/bin`. Au démarrage dans la cage, `/bin`,
-    `/opt/la-console-tools` et le dossier de libs stagées sont remountés
-    **read-only** (bind + remount,ro via l'applet `mount` de busybox, possible
-    car le processus est root dans son propre user namespace) pour empêcher
-    l'agent d'écraser un outil via une écriture whitelist (tout le contenu du
-    chroot est sinon accessible en écriture sous le root). **Fail-closed** :
-    si un remount échoue, la console refuse de démarrer (exit 2) — une image de
-    cage accessible en écriture n'est pas un déploiement acceptable.
-  - **Commandes trusted en mode serveur** : avec un busybox stagé, `trusted`
-    s'exécute via `<busybox> sh -c` (`PATH` cage, `HOME=/tmp`, `GOROOT` détecté
-    si présent). **Sans busybox stagé, `trusted` reste `denied` (fail-closed)**
-    et seules les commandes whitelistées tournent en mode serveur.
-  - **Réseau** : la cage partage le namespace réseau de l'hôte (pas de
-    `--net`) pour garder la commande `http` vers localhost ; une commande
-    trusted peut donc joindre le réseau, comme en mode user — le périmètre
-    reste le chroot, pas le réseau. Sur macOS, le profil seatbelt fait
-    `deny network*` (ou loopback seul) ; sur Windows/WSL2, le réseau de la VM
-    est restreint par firewall.
 - **v2 par plateforme (planifié — voir [platforms.md](platforms.md))** : backend
-  de confinement OS — Linux : cage userns+chroot (livré) + landlock par spawn ;
-  macOS : **seatbelt** (`sandbox-exec`, profil SBPL généré par entrée trusted) ;
-  Windows : console lancée dans **WSL2** (VM utilitaire ; ponts host — interop
-  `.exe`, `/mnt/c`, réseau NAT, socket docker — désactivés sauf déclaration
-  explicite). Fail-closed : backend indisponible = `denied`, jamais de mode
-  dégradé, aucun privilège requis.
+  de confinement OS par spawn, retenu = crate **`nono`** (nolabs-ai, Apache-2.0)
+  via une couche d'abstraction unique `src/sandbox_backend.rs` — Linux :
+  **landlock** (noyau ≥ 5.13) ; macOS : **seatbelt** ; Windows : console lancée
+  dans **WSL2** (VM utilitaire ; ponts host — interop `.exe`, `/mnt/c`, réseau
+  NAT, socket docker — désactivés sauf déclaration explicite). Fail-closed :
+  backend indisponible = `denied`, jamais de mode dégradé, aucun privilège
+  requis. Le mode serveur (user namespace + chroot via `unshare`) a été
+  **supprimé** (décision 2026-11-24) au profit de ce backend par spawn.
 - **✅ Décision v2 livrée : retrait des `ulimit`** du shell des commandes trusted —
   remplacés par les limites **par entrée** du manifeste TOML (`timeout_secs`,
   `max_write_bytes`, `mem_bytes`, `cpus`, `network`), appliquées par le backend

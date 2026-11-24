@@ -113,8 +113,6 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
@@ -191,8 +189,6 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         let node = parse_input("ls .env", &HashMap::new()).unwrap();
         let err = execute(&node, &ctx).unwrap_err();

@@ -3,13 +3,14 @@
 Vérifié contre le code de `main` au commit `7e54af4` (PR #41).
 Document de travail, non indexé dans `spec/README.md`.
 
-## Décisions de direction (2026-11-24) — à faire, PAS encore dans le code
+## Décisions de direction (2026-11-24)
 
-1. **Supprimer le mode server** : `--mode server`, le re-exec `unshare` userns+chroot
-   (`sandbox.rs`), la mini-image de cage (`--sandbox-busybox` / `--sandbox-busybox-sha256` /
-   `--sandbox-tools-dir`, remount read-only, `trusted` via `busybox sh` dans la cage).
-   Conséquence : `trusted` en mode serveur disparaît avec la cage ; le flag `--mode`
-   disparaît ou ne garde que `user`.
+1. **✅ FAIT — Supprimer le mode server** : `--mode server`, le re-exec `unshare` userns+chroot
+   (`sandbox.rs` supprimé), la mini-image de cage (`--sandbox-busybox` / `--sandbox-busybox-sha256` /
+   `--sandbox-tools-dir`, remount read-only, `trusted` via `busybox sh` dans la cage) retirés,
+   ainsi que `Ctx::sandboxed`/`Ctx::sandbox_shell`, le paramètre `cage_shell` de
+   `kill_process_tree`, et la dépendance `walkdir` (staging de cage). Le flag `--mode`
+   disparaît du CLI.
 2. **`platform.rs` : renommer `unix` → `macos`** — la cible visée est macOS, pas Linux
    générique : `platform/unix.rs` devient `platform/macos.rs` (et `cfg(unix)` devient
    `cfg(target_os = "macos")` là où c'est pertinent). Windows natif reste fail-closed tel quel.
@@ -94,7 +95,7 @@ Document de travail, non indexé dans `spec/README.md`.
 - `spec/testing.md:57` : matrice CI « ubuntu + macOS » → ajouter `windows-latest` (`.github/workflows/ci.yml:51`)
 - `spec/structure.md` : manque `json.rs`/`tee.rs` dans `commands/`, `json.rs`/`stream_filters.rs`/`tee.rs` dans `tests/` ; « scan des diffs » fantôme ligne 22
 
-## D. Impact des décisions de direction sur les docs (à traiter quand le code suivra)
+## D. Impact des décisions de direction sur les docs
 
-- **Décision 1 (suppression du mode server)** : `ROADMAP.md` (v2 étapes 1 et 2), `spec/security.md` (niveaux de confinement, mini-image de cage), `spec/protocol.md` (flags `--mode`, `--sandbox-busybox*`, `--sandbox-tools-dir`), `spec/structure.md` (`sandbox.rs`), `spec/commands.md` (trusted en mode serveur), `spec/platform.md` §2/§5, `docs/README.md` (mode server + cage), `spec/platforms.md` (cage comme backend Linux) : tout ce qui décrit `--mode server`, la cage userns+chroot, le busybox stagé et le remount read-only devra être retiré.
-- **Décision 2 (unix → macos)** : `spec/platform.md` (§4 `platform/unix.rs`, §5 branchements), `spec/platforms.md` §2 (inventaire `cfg(unix)`), `spec/structure.md` (ligne `platform.rs`) : renommer le module et les `cfg(unix)` pertinents en macOS.
+- **Décision 1 (suppression du mode server)** : ✅ traité avec le code — `ROADMAP.md` (v2 étapes 1 et 2 marquées supprimées), `spec/security.md` (niveaux de confinement), `spec/protocol.md` (flags retirés), `spec/structure.md` (`sandbox.rs` et `walkdir` retirés), `spec/commands.md` (trusted en mode serveur + « scan des changements » fantôme retirés), `spec/platform.md` §2/§5, `docs/README.md`, `spec/platforms.md`, `spec/plugins.md`, `spec/testing.md` : tout ce qui décrivait `--mode server`, la cage userns+chroot, le busybox stagé et le remount read-only a été retiré.
+- **Décision 2 (unix → macos)** — à faire, PAS encore dans le code : `spec/platform.md` (§4 `platform/unix.rs`, §5 branchements), `spec/platforms.md` §2 (inventaire `cfg(unix)`), `spec/structure.md` (ligne `platform.rs`) : renommer le module et les `cfg(unix)` pertinents en macOS.

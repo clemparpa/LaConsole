@@ -12,15 +12,14 @@ la-console/
     la-console/       # la fausse console (binaire + lib)
       Cargo.toml
       src/
-        main.rs       # CLI clap : --root, bornes, --mode, --trusted-file/--trusted-sha256, --sensibles-file, --secrets-file, image de cage (--sandbox-busybox/--sandbox-tools-dir) ; spawn du protocole JSON
+        main.rs       # CLI clap : --root, bornes, --trusted-file/--trusted-sha256, --sensibles-file, --secrets-file ; spawn du protocole JSON
         lib.rs        # #![forbid(unsafe_code)]
         console.rs    # boucle protocole JSON stdin/stdout, synchrone (std::io, une requete a la fois)
         parse.rs      # parser shell cadré : shell-words + opérateurs whitelistés -> arbre de commandes
         resolve.rs    # resolve() : confinement root, unique point de passage
         commands/     # whitelist: cat, ls, echo, grep, sed, sub, http + filtres de flux head/tail/wc/sort/uniq/cut/tr (stream.rs = helpers communs)
-        trusted.rs    # commandes trusted : manifeste TOML strict (trusted.toml, seul format accepté), checksum sha256, exécution shell réduite (/bin/sh en mode user, busybox sh dans la cage en mode server) ; plus d'ulimit : timeout/kill du groupe de processus par la console
-        sandbox.rs    # mode serveur : unshare userns+chroot, staging du binaire/libs, mini-image de cage (busybox + outillage)
-        platform.rs   # couche d'abstraction OS (spec/platform.md) : primitives fs (identité fichier, canonicalize), spawn + kill de l'arbre, exit code, shell — impls cfg(unix)/cfg(windows), fail-closed sur Windows natif ; backends seatbelt/WSL2/landlock prévus v2 (spec/platforms.md)
+        trusted.rs    # commandes trusted : manifeste TOML strict (trusted.toml, seul format accepté), checksum sha256, exécution shell réduite (/bin/sh via platform::shell()) ; plus d'ulimit : timeout/kill du groupe de processus par la console
+        platform.rs   # couche d'abstraction OS (spec/platform.md) : primitives fs (identité fichier, canonicalize), spawn + kill de l'arbre, exit code, shell — impls cfg(unix)/cfg(windows), fail-closed sur Windows natif ; backend de confinement OS prévu v2 via la crate nono (spec/platforms.md)
         sink.rs       # trait Sink + FileSink / CallerSink / PipeSink
       tests/
         evasion.rs    # tests d'évasion (.., symlinks, absolus, unicode...)
@@ -39,8 +38,9 @@ la-console/
   symboles en anglais.
 - Le fichier `trusted.toml` (et les regex de fichiers sensibles) vit **dans
   chaque dépôt où tourne l'agent**, pas dans la-console : le module
-  `trusted.rs` ne gère que le parsing, le wrapping, la sécurité (checksum, scan
-  des diffs) et l'exécution — il reçoit le chemin du fichier en argument.
+  `trusted.rs` ne gère que le parsing, le wrapping, la sécurité (checksum
+  sha256 re-vérifié avant chaque exécution) et l'exécution — il reçoit le
+  chemin du fichier en argument.
 
 ## Dépendances figées (v1)
 
@@ -62,10 +62,9 @@ la-console/
 | Tokenisation shell (quotes, espaces) | `shell-words` |
 | Globs (`*.rs`, `**/*.md`) | `wax` (moteur de glob de ripgrep) |
 | Masquage multi-secrets (`***` en sortie et avant écriture disque) | `aho-corasick` (déjà transitif via `regex`, leftmost-longest) |
-| Parcours/copie récursif du staging cage (liens non suivis, symlinks refusés fail-closed) | `walkdir` (déjà transitif via `ignore`) |
 | Rendu des chemins en séparateurs `/` (contrat JSON, `platform::path_to_slash`) | `path-slash` |
 | HTTP whitelisté (localhost uniquement) | `reqwest` + rustls |
-| Répertoire temporaire (HOME des shells trusted en mode user, supprimé à la sortie ; aussi utilisé par les tests) | `tempfile` |
+| Répertoire temporaire (HOME des shells trusted, supprimé à la sortie ; aussi utilisé par les tests) | `tempfile` |
 | Property-based testing | `proptest` (dev-dependency) |
 
 Notes :

@@ -74,7 +74,7 @@ pub fn set_new_process_group(_cmd: &mut Command) {}
 
 /// Kills the child (always), then the whole tree best-effort via
 /// `taskkill /T /F /PID <pid>`.
-pub fn kill_process_tree(child: &mut Child, _cage_shell: Option<&str>) {
+pub fn kill_process_tree(child: &mut Child) {
     let _ = child.kill();
     let _ = Command::new("taskkill")
         .args(taskkill_args(child.id()))

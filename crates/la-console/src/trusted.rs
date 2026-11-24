@@ -120,7 +120,6 @@ impl TrustedRegistry {
         path: &Path,
         expected_sha256: Option<String>,
         root: &Path,
-        sandboxed: bool,
     ) -> Result<Self, TrustedError> {
         let content = std::fs::read_to_string(path)?;
         let entries = match path.extension().and_then(|ext| ext.to_str()) {
@@ -131,7 +130,7 @@ impl TrustedRegistry {
                 ));
             }
         };
-        let (home, home_is_temp) = make_home(root, sandboxed)?;
+        let (home, home_is_temp) = make_home(root)?;
         Ok(Self {
             path: path.to_path_buf(),
             expected_sha256,
@@ -145,8 +144,7 @@ impl TrustedRegistry {
         &self.home
     }
 
-    /// Removes the `tempfile`-created HOME at shutdown (best-effort). The
-    /// in-cage `/tmp` HOME of server mode is left alone.
+    /// Removes the `tempfile`-created HOME at shutdown (best-effort).
     pub fn cleanup_home(&self) {
         if self.home_is_temp {
             let _ = std::fs::remove_dir_all(&self.home);
@@ -329,20 +327,13 @@ pub fn command_timeout_secs(cmd: &SimpleCommand, ctx: &Ctx) -> u64 {
 }
 
 /// HOME for trusted shells must live outside the root so a trusted command
-/// cannot persist anything under the confined perimeter via $HOME. Inside the
-/// server-mode cage the whole filesystem is the root, so HOME is `/tmp`
-/// (already inside the confined perimeter, which the chroot enforces).
+/// cannot persist anything under the confined perimeter via $HOME.
 /// Returns the HOME for trusted shells and whether we own it as a temporary
 /// directory (to remove at shutdown). `tempfile` creates it with an
 /// unpredictable name, `O_EXCL` and 0700 permissions: a predictable name
 /// under a shared `/tmp` would let another local user pre-create the path
 /// (e.g. as a symlink) and receive the trusted shell's `$HOME`.
-fn make_home(root: &Path, sandboxed: bool) -> Result<(PathBuf, bool), TrustedError> {
-    if sandboxed {
-        let home = PathBuf::from("/tmp");
-        std::fs::create_dir_all(&home)?;
-        return Ok((home, false));
-    }
+fn make_home(root: &Path) -> Result<(PathBuf, bool), TrustedError> {
     let dir = tempfile::tempdir()?;
     let home = dir.keep();
     let canonical_home = platform::canonicalize(&home)?;
@@ -367,22 +358,6 @@ pub(crate) fn run(
     ctx: &Ctx,
     _quota: &Arc<DiskQuota>,
 ) -> Result<RawOutput, ExecError> {
-    // In server mode the cage has no system shell: trusted commands run
-    // through the staged busybox, and stay denied when none was staged
-    // (fail-closed).
-    let cage_shell = if ctx.sandboxed {
-        match ctx.sandbox_shell.as_deref() {
-            Some(shell) => Some(shell.to_string()),
-            None => {
-                return Err(ExecError::Denied(
-                    "trusted commands are not available in server mode (no busybox staged in the cage; pass --sandbox-busybox)"
-                        .to_string(),
-                ));
-            }
-        }
-    } else {
-        None
-    };
     let Some(registry) = ctx.trusted.as_ref() else {
         return Err(ExecError::Denied(
             "trusted commands are not configured (--trusted-file)".to_string(),
@@ -426,7 +401,7 @@ pub(crate) fn run(
             check_read_path(ctx, &arg.text)?;
         }
     }
-    exec_trusted(entry, args, ctx, registry.home(), cage_shell.as_deref())
+    exec_trusted(entry, args, ctx, registry.home())
 }
 
 fn exec_trusted(
@@ -434,30 +409,17 @@ fn exec_trusted(
     args: &[Arg],
     ctx: &Ctx,
     home: &Path,
-    cage_shell: Option<&str>,
 ) -> Result<RawOutput, ExecError> {
     let script = build_script(&entry.command);
-    // User mode: the host shell from `platform::shell()` (None on platforms
-    // without one, e.g. Windows native: denied fail-closed). Server mode: the
-    // staged busybox, invoked as `<busybox> sh -c ...` so the applet interface
-    // is explicit.
-    let mut command = match cage_shell {
-        Some(busybox) => {
-            let mut c = Command::new(busybox);
-            c.arg("sh").arg("-c");
-            c
-        }
-        None => {
-            let Some(sh) = platform::shell() else {
-                return Err(ExecError::Denied(
-                    "trusted commands are not available on this platform (no shell)".to_string(),
-                ));
-            };
-            let mut c = Command::new(sh);
-            c.arg("-c");
-            c
-        }
+    // The host shell from `platform::shell()` (None on platforms without one,
+    // e.g. Windows native: denied fail-closed).
+    let Some(sh) = platform::shell() else {
+        return Err(ExecError::Denied(
+            "trusted commands are not available on this platform (no shell)".to_string(),
+        ));
     };
+    let mut command = Command::new(sh);
+    command.arg("-c");
     platform::set_new_process_group(&mut command);
     command
         .arg(&script)
@@ -470,32 +432,16 @@ fn exec_trusted(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if cage_shell.is_some() {
-        command
-            .env("PATH", crate::sandbox::CAGE_TRUSTED_PATH)
-            .env("LD_LIBRARY_PATH", crate::sandbox::CAGE_LIBS_DIR);
-        let tools = Path::new(crate::sandbox::CAGE_TOOLS_DIR);
-        if tools.join("go").join("bin").join("go").exists() {
-            command.env("GOROOT", tools.join("go"));
-        } else if tools.join("bin").join("go").exists() {
-            command.env("GOROOT", tools);
-        }
-    } else {
-        command.env("PATH", platform::trusted_path_env());
-    }
+    command.env("PATH", platform::trusted_path_env());
     let timeout_secs = entry.effective_timeout_secs(ctx);
-    run_child(command, cage_shell, timeout_secs)
+    run_child(command, timeout_secs)
 }
 
 fn build_script(command: &str) -> String {
     format!("{command} \"$@\"")
 }
 
-fn run_child(
-    mut command: Command,
-    cage_shell: Option<&str>,
-    timeout_secs: u64,
-) -> Result<RawOutput, ExecError> {
+fn run_child(mut command: Command, timeout_secs: u64) -> Result<RawOutput, ExecError> {
     let mut child = command
         .spawn()
         .map_err(|e| ExecError::Fail(format!("trusted: cannot spawn shell: {e}")))?;
@@ -514,7 +460,7 @@ fn run_child(
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    platform::kill_process_tree(&mut child, cage_shell);
+                    platform::kill_process_tree(&mut child);
                     let _ = child.wait();
                     return Err(ExecError::Limit(format!(
                         "command timed out after {timeout_secs}s"
@@ -523,7 +469,7 @@ fn run_child(
                 std::thread::sleep(Duration::from_millis(20));
             }
             Err(err) => {
-                platform::kill_process_tree(&mut child, cage_shell);
+                platform::kill_process_tree(&mut child);
                 return Err(ExecError::Fail(format!("trusted: wait failed: {err}")));
             }
         }
@@ -550,19 +496,10 @@ mod tests {
         content: &str,
         expected: Option<String>,
     ) -> (tempfile::TempDir, TrustedRegistry) {
-        registry_for_sandboxed(root, content, expected, false)
-    }
-
-    fn registry_for_sandboxed(
-        root: &Path,
-        content: &str,
-        expected: Option<String>,
-        sandboxed: bool,
-    ) -> (tempfile::TempDir, TrustedRegistry) {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("trusted.toml");
         fs::write(&file, content).unwrap();
-        let registry = TrustedRegistry::load(&file, expected, root, sandboxed).unwrap();
+        let registry = TrustedRegistry::load(&file, expected, root).unwrap();
         (dir, registry)
     }
 
@@ -577,8 +514,6 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted,
-            sandboxed: false,
-            sandbox_shell: None,
         }
     }
 
@@ -695,7 +630,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let toml_file = dir.path().join("trusted.toml");
         fs::write(&toml_file, "[commands.build]\ncommand = \"true\"\n").unwrap();
-        let registry = TrustedRegistry::load(&toml_file, None, dir.path(), false).unwrap();
+        let registry = TrustedRegistry::load(&toml_file, None, dir.path()).unwrap();
         assert!(registry.get("build").is_ok());
 
         for name in ["trusted.txt", "trusted.json", "trusted"] {
@@ -703,7 +638,7 @@ mod tests {
             fs::write(&file, "[commands.build]\ncommand = \"true\"\n").unwrap();
             assert!(
                 matches!(
-                    TrustedRegistry::load(&file, None, dir.path(), false),
+                    TrustedRegistry::load(&file, None, dir.path()),
                     Err(TrustedError::UnsupportedFormat(_))
                 ),
                 "{name} must be refused (v1 .txt support removed)"
@@ -736,8 +671,7 @@ mod tests {
         let file_dir = tempfile::tempdir().unwrap();
         let file = file_dir.path().join("trusted.toml");
         fs::write(&file, content).unwrap();
-        let registry =
-            TrustedRegistry::load(&file, Some(sha_of(content)), dir.path(), false).unwrap();
+        let registry = TrustedRegistry::load(&file, Some(sha_of(content)), dir.path()).unwrap();
         assert!(registry.verify().is_ok());
         fs::write(
             &file,
@@ -756,63 +690,6 @@ mod tests {
         let ctx = ctx_with(&dir, None);
         let err = run_cmd(&ctx, "trusted build").unwrap_err();
         assert!(matches!(err, ExecError::Denied(m) if m.contains("not configured")));
-    }
-
-    #[test]
-    fn run_is_denied_in_sandboxed_mode() {
-        let dir = tempfile::tempdir().unwrap();
-        let content = "[commands.build]\ncommand = \"true\"\n";
-        let (_trusted_dir, registry) = registry_for(dir.path(), content, Some(sha_of(content)));
-        let mut ctx = ctx_with(&dir, Some(registry));
-        ctx.sandboxed = true;
-        let err = run_cmd(&ctx, "trusted build").unwrap_err();
-        assert!(matches!(err, ExecError::Denied(m) if m.contains("server mode")));
-    }
-
-    /// A fake "busybox": drops the applet argument and execs the host shell,
-    /// mimicking `<busybox> sh -c ...` closely enough to test the plumbing.
-    #[cfg(unix)]
-    fn fake_busybox(dir: &tempfile::TempDir) -> PathBuf {
-        let fake = dir.path().join("busybox");
-        fs::write(&fake, "#!/bin/sh\nshift\nexec /bin/sh \"$@\"\n").unwrap();
-        platform::testutil::set_exec_mode(&fake).unwrap();
-        fake
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn run_in_sandbox_executes_through_the_staged_shell() {
-        let dir = tempfile::tempdir().unwrap();
-        let fake_dir = tempfile::tempdir().unwrap();
-        let content = "[commands.hello]\ncommand = \"echo hi-from-cage\"\n\n[commands.path]\ncommand = \"echo $PATH\"\n";
-        let (_trusted_dir, registry) = registry_for(dir.path(), content, Some(sha_of(content)));
-        let mut ctx = ctx_with(&dir, Some(registry));
-        ctx.sandboxed = true;
-        ctx.sandbox_shell = Some(fake_busybox(&fake_dir).to_string_lossy().into_owned());
-        let out = run_cmd(&ctx, "trusted hello").unwrap();
-        assert_eq!(out.code, 0);
-        assert_eq!(out.stdout, "hi-from-cage\n");
-        let out = run_cmd(&ctx, "trusted path").unwrap();
-        assert!(
-            out.stdout.contains("/opt/la-console-tools"),
-            "expected cage PATH, got: {}",
-            out.stdout
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn sandboxed_registry_uses_tmp_as_home() {
-        let dir = tempfile::tempdir().unwrap();
-        let content = "[commands.home]\ncommand = \"echo $HOME\"\n";
-        let (_trusted_dir, registry) =
-            registry_for_sandboxed(dir.path(), content, Some(sha_of(content)), true);
-        let mut ctx = ctx_with(&dir, Some(registry));
-        ctx.sandboxed = true;
-        let fake_dir = tempfile::tempdir().unwrap();
-        ctx.sandbox_shell = Some(fake_busybox(&fake_dir).to_string_lossy().into_owned());
-        let out = run_cmd(&ctx, "trusted home").unwrap();
-        assert_eq!(out.stdout.trim(), "/tmp");
     }
 
     #[test]
@@ -972,8 +849,7 @@ mod tests {
         let file_dir = tempfile::tempdir().unwrap();
         let file = file_dir.path().join("trusted.toml");
         fs::write(&file, content).unwrap();
-        let registry =
-            TrustedRegistry::load(&file, Some(sha_of(content)), dir.path(), false).unwrap();
+        let registry = TrustedRegistry::load(&file, Some(sha_of(content)), dir.path()).unwrap();
         let ctx = ctx_with(&dir, Some(registry));
         let out = run_cmd(&ctx, "trusted noop").unwrap();
         assert_eq!(out.code, 0);
@@ -1011,8 +887,7 @@ mod tests {
         let file = file_dir.path().join("trusted.toml");
         let content = "[commands.build]\ncommand = \"true\"\nmem_bytes = 1073741824\n";
         fs::write(&file, content).unwrap();
-        let registry =
-            TrustedRegistry::load(&file, Some(sha_of(content)), dir.path(), false).unwrap();
+        let registry = TrustedRegistry::load(&file, Some(sha_of(content)), dir.path()).unwrap();
         let ctx = ctx_with(&dir, Some(registry));
         let err = run_cmd(&ctx, "trusted build").unwrap_err();
         assert!(
@@ -1030,8 +905,7 @@ mod tests {
         let file = file_dir.path().join("trusted.toml");
         let content = "[commands.slow]\ncommand = \"sleep 30\"\ntimeout_secs = 1\n";
         fs::write(&file, content).unwrap();
-        let registry =
-            TrustedRegistry::load(&file, Some(sha_of(content)), dir.path(), false).unwrap();
+        let registry = TrustedRegistry::load(&file, Some(sha_of(content)), dir.path()).unwrap();
         let ctx = ctx_with(&dir, Some(registry));
         let start = Instant::now();
         let err = run_cmd(&ctx, "trusted slow").unwrap_err();
@@ -1067,8 +941,7 @@ mod tests {
         let file = file_dir.path().join("trusted.toml");
         let content = "[commands.noop]\ncommand = \"true\"\n";
         fs::write(&file, content).unwrap();
-        let registry =
-            TrustedRegistry::load(&file, Some(sha_of(content)), dir.path(), false).unwrap();
+        let registry = TrustedRegistry::load(&file, Some(sha_of(content)), dir.path()).unwrap();
         assert!(registry.verify().is_ok());
         let ctx = ctx_with(&dir, Some(registry));
         let out = run_cmd(&ctx, "trusted noop").unwrap();
@@ -1151,8 +1024,7 @@ mod tests {
         let file_dir = tempfile::tempdir().unwrap();
         let file = file_dir.path().join("trusted.toml");
         fs::write(&file, content).unwrap();
-        let registry =
-            TrustedRegistry::load(&file, Some(sha_of(content)), dir.path(), false).unwrap();
+        let registry = TrustedRegistry::load(&file, Some(sha_of(content)), dir.path()).unwrap();
         let ctx = ctx_with(&dir, Some(registry));
         let out = run_cmd(&ctx, "trusted noop | cat").unwrap();
         assert_eq!(out.code, 0);

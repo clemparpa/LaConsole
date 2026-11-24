@@ -917,8 +917,6 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
@@ -934,8 +932,6 @@ mod tests {
                 ..Limits::default()
             },
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         }
     }
 
@@ -1424,8 +1420,6 @@ mod tests {
                 ..Limits::default()
             },
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         for cmd in ["grep hit a.txt", "grep -o hit a.txt", "grep -v zzz a.txt"] {
             let node = parse_input(cmd, &HashMap::new()).unwrap();
@@ -1689,8 +1683,6 @@ mod tests {
                 ..Limits::default()
             },
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         let node = parse_input("grep -f pats.txt a.txt", &HashMap::new()).unwrap();
         assert!(matches!(
@@ -1751,8 +1743,6 @@ mod tests {
                 secrets: vec![],
                 limits: Limits::default(),
                 trusted: None,
-                sandboxed: false,
-                sandbox_shell: None,
             };
             match execute(&node, &ctx) {
                 Ok(out) => {
@@ -1788,8 +1778,6 @@ mod tests {
                 secrets: vec![],
                 limits: Limits::default(),
                 trusted: None,
-                sandboxed: false,
-                sandbox_shell: None,
             };
             match execute(&node, &ctx) {
                 Ok(out) => {

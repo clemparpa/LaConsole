@@ -235,8 +235,6 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         let node = parse_input(cmd, &HashMap::new()).unwrap();
         execute(&node, &ctx)
@@ -420,8 +418,6 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         let quota = std::sync::Arc::new(crate::sink::DiskQuota::new(
             ctx.limits.max_command_write_bytes,
@@ -519,8 +515,6 @@ mod tests {
             secrets: vec!["tok-abc123".to_string()],
             limits: Limits::default(),
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         let node = parse_input(
             r#"echo "key tok-abc123 end" | sed "s/key/value/""#,
@@ -544,8 +538,6 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         let node = parse_input(r#"cat a.txt | sed "s/A/B/" > .env"#, &HashMap::new()).unwrap();
         assert!(matches!(execute(&node, &ctx), Err(ExecError::Denied(_))));
@@ -586,8 +578,6 @@ mod tests {
             secrets: vec![],
             limits: Limits::default(),
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         let node = parse_input(r#"sed -i "s/A/B/" .env"#, &HashMap::new()).unwrap();
         assert!(matches!(
@@ -614,8 +604,6 @@ mod tests {
                 ..Limits::default()
             },
             trusted: None,
-            sandboxed: false,
-            sandbox_shell: None,
         };
         let node = parse_input(r#"sed "s/a/b/g" big.txt"#, &HashMap::new()).unwrap();
         assert!(matches!(

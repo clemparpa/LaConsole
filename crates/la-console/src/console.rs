@@ -35,11 +35,6 @@ pub struct Options {
     /// Known secrets (one per line) masked as `***` in every output and
     /// before any on-disk write.
     pub secrets_file: Option<PathBuf>,
-    /// True when running inside the server-mode sandbox (userns + chroot).
-    pub sandboxed: bool,
-    /// In-cage busybox path (e.g. "/bin/busybox") when one was staged with
-    /// `--sandbox-busybox`; trusted commands run through it in server mode.
-    pub sandbox_shell: Option<String>,
 }
 
 impl Default for Options {
@@ -51,8 +46,6 @@ impl Default for Options {
             trusted_sha256: None,
             sensibles_file: None,
             secrets_file: None,
-            sandboxed: false,
-            sandbox_shell: None,
         }
     }
 }
@@ -73,19 +66,13 @@ pub fn run<R: BufRead, W: Write>(
         Some(path) => crate::sink::load_secrets(path)?,
         None => Vec::new(),
     };
-    // In server mode the registry is loaded like in user mode; trusted
-    // execution itself is gated on the staged busybox (ctx.sandbox_shell).
+    // The trusted registry is loaded once at startup; the sha256 checksum is
+    // re-verified before every trusted execution.
     let trusted = match &opts.trusted_file {
         Some(path) => Some(
-            TrustedRegistry::load(
-                path,
-                opts.trusted_sha256.clone(),
-                resolver.root(),
-                opts.sandboxed,
-            )
-            .map_err(|err| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
-            })?,
+            TrustedRegistry::load(path, opts.trusted_sha256.clone(), resolver.root()).map_err(
+                |err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()),
+            )?,
         ),
         None => None,
     };
@@ -102,8 +89,6 @@ pub fn run<R: BufRead, W: Write>(
         secrets,
         limits,
         trusted,
-        sandboxed: opts.sandboxed,
-        sandbox_shell: opts.sandbox_shell.clone(),
     };
     let mut line = String::new();
     loop {
