@@ -125,6 +125,30 @@ La v1 est Unix-only (Linux + macOS), documenté.
   `show`/`branch`/`rev-parse`, in-process via `git2`) ; mutations (`add`,
   `commit`, `push`…) restent `trusted` (cf. `spec/commands.md`).
 
+- ✅ **Hygiène de l'écosystème Rust (cette PR)** : fin des roues maison là où
+  l'écosystème fait déjà le job —
+  - masquage des secrets : `SecretMasker` maison → `aho-corasick`
+    (`MatchKind::LeftmostLongest`, carry de flux conservé ; déjà transitif via
+    `regex`, aucun ajout à l'arbre) ;
+  - `HOME` des shells trusted créé via `tempfile` (nom imprévisible, `O_EXCL`,
+    0700 — l'ancien `la-console-home-<pid>` était prévisible sous un `/tmp`
+    partagé) et supprimé à la sortie de la console (`cleanup_home`) ;
+  - staging de la cage (`copy_dir_recursive`/`walk_files`) → `walkdir` sans
+    suivre les liens ; symlinks et fichiers spéciaux refusés fail-closed (plus
+    de boucle infinie possible sur un symlink cyclique) ;
+  - `platform::path_to_slash` → `path-slash` (`PathExt::to_slash`) ;
+  - sha256 : hex via `format!("{:x}", …)` et `trusted::sha256_hex` unique,
+    réutilisé par `sandbox::sha256_file` ;
+  - `read_bounded` lit via `File::take(max_read_bytes + 1)` (plus de read entier
+    en mémoire après le stat) ;
+  - `has_glob` aligné sur le moteur `wax` (métacaractères `*?[{` + délégation à
+    `Glob::partition` ; un backslash seul reste littéral pour que `resolve()`
+    rende toujours `denied` WindowsPath) ;
+  - **`--secrets-file <chemin>` branché** : liste des secrets connus chargée au
+    démarrage (une ligne par secret, `#` commentaires, UTF-8 strict, bornée
+    1 MiO, fail-closed) — le masquage `***` en sortie JSON et avant écriture
+    disque est désormais effectif en production (avant : `ctx.secrets` vide).
+
 ## v2 (backlog)
 
 - **Pipe `trusted | whitelist`, tête uniquement** 🚧 (cette PR) : `trusted` est accepté comme **premier élément** d'un pipe (`trusted run-tests | grep ERROR`) ; toute autre position (`whitelist | trusted …`, `a | trusted … | b`, `trusted a | trusted b`) reste `denied` au parse (`TrustedInPipe`). Le stdin du shell trusted reste `null` — aucun octet pipé ne peut lui être fourni ni interprété ; sa sortie est bornée via `PipeSink` (troncature) puis passée aux commandes whitelist suivantes, chacune revalidée (niveaux 1–3) ; redirection `>`/`>>` toujours réservée au dernier élément, via `FileSink`. Le checksum sha256 de `trusted.txt` est re-vérifié avant chaque exécution, y compris en tête de pipe. Proptest : jamais de `trusted` après la tête d'un pipe (`pipe_has_misplaced_trusted`). Cf. `spec/plugins.md` (phase 2). **Testable** : tests unitaires parse + exécution (pipe tête → `grep`, redirect, checksum) + e2e.

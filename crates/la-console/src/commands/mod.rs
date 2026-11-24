@@ -18,6 +18,7 @@ pub mod uniq;
 pub mod wc;
 
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -619,7 +620,13 @@ pub(crate) fn read_bounded(ctx: &Ctx, rel: &str) -> Result<Vec<u8>, ExecError> {
         return Err(ExecError::Fail(format!("{rel}: not a regular file")));
     }
     check_read_bound(ctx, rel, &meta)?;
-    let bytes = fs::read(&target).map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
+    // `take(limit + 1)` caps the actual read even if the file grew between
+    // the metadata check and the read (no unbounded read into memory).
+    let file = fs::File::open(&target).map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
+    let mut bytes = Vec::new();
+    file.take((ctx.limits.max_read_bytes + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|err| ExecError::Fail(format!("{rel}: {err}")))?;
     if bytes.len() > ctx.limits.max_read_bytes {
         return Err(ExecError::Limit(format!(
             "{rel}: file too large ({} bytes max)",

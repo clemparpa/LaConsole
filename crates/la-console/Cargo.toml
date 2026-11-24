@@ -6,6 +6,7 @@ license = "MIT OR Apache-2.0"
 description = "Confined fake console driven by an AI agent over a line-by-line JSON protocol"
 
 [dependencies]
+aho-corasick = "1"
 clap = { version = "4", features = ["derive"] }
 grep = "0.3"
 ignore = "0.4"
@@ -15,13 +16,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 shell-words = "1"
+tempfile = "3"
 thiserror = "2"
+path-slash = "0.2"
 toml = "1.2.2"
 wax = "0.7"
+walkdir = "2"
 
 [dev-dependencies]
 proptest = "1"
-tempfile = "3"
 
 # OS abstraction layer (spec/platform.md): only used by the cfg(windows) code.
 # winapi-util (already transitive via same-file) reads volume serial + file

@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
+
+use aho_corasick::{AhoCorasick, MatchKind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -77,50 +79,46 @@ pub fn mask_secrets(text: &str, secrets: &[String]) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Streaming multi-pattern replacement of known secrets by `***`, built on
+/// `aho-corasick` (already in the dep tree via `regex`) with
+/// leftmost-longest semantics: at each position the longest secret wins,
+/// matching the previous hand-rolled matcher. `carry` keeps the tail of the
+/// previous output chunk so a secret split across two writes is still masked.
 struct SecretMasker {
-    secrets: Vec<Vec<u8>>,
+    ac: AhoCorasick,
+    replacements: Vec<&'static [u8]>,
+    max_len: usize,
     carry: Vec<u8>,
 }
 
 impl SecretMasker {
     fn new(secrets: &[String]) -> Self {
-        let mut secrets: Vec<Vec<u8>> = secrets
+        let patterns: Vec<&[u8]> = secrets
             .iter()
             .filter(|s| !s.is_empty())
-            .map(|s| s.clone().into_bytes())
+            .map(|s| s.as_bytes())
             .collect();
-        secrets.sort_by_key(|b| std::cmp::Reverse(b.len()));
+        let ac = AhoCorasick::builder()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(patterns)
+            .expect("aho-corasick build with byte patterns cannot fail");
+        let replacements = vec![SECRET_MASK.as_bytes(); ac.patterns_len()];
         Self {
-            secrets,
+            max_len: ac.max_pattern_len(),
+            ac,
+            replacements,
             carry: Vec::new(),
         }
     }
 
     fn mask(&mut self, bytes: &[u8]) -> Vec<u8> {
-        if self.secrets.is_empty() {
+        if self.ac.patterns_len() == 0 {
             return bytes.to_vec();
         }
-        let max_len = self.secrets[0].len();
         let mut data = std::mem::take(&mut self.carry);
         data.extend_from_slice(bytes);
-        let mut out = Vec::with_capacity(data.len());
-        let mut i = 0;
-        while i < data.len() {
-            let mut matched = false;
-            for secret in &self.secrets {
-                if data.len() - i >= secret.len() && data[i..i + secret.len()] == secret[..] {
-                    out.extend_from_slice(SECRET_MASK.as_bytes());
-                    i += secret.len();
-                    matched = true;
-                    break;
-                }
-            }
-            if !matched {
-                out.push(data[i]);
-                i += 1;
-            }
-        }
-        let keep = max_len - 1;
+        let mut out = self.ac.replace_all_bytes(&data, &self.replacements);
+        let keep = self.max_len - 1;
         if out.len() > keep {
             let split = out.len() - keep;
             self.carry = out.split_off(split);
@@ -340,6 +338,31 @@ pub fn sensitive_match(sensibles: &[regex::Regex], root: &Path, target: &Path) -
         .map(|_| rel_str)
 }
 
+/// Hard bound on the size of the `--secrets-file` (fail-closed).
+pub const MAX_SECRETS_FILE_BYTES: usize = 1024 * 1024;
+
+/// Loads the known secrets (one per line, `#` comments and blank lines
+/// ignored, strict UTF-8, file size bounded to `MAX_SECRETS_FILE_BYTES`).
+/// Fail-closed: any error aborts the load.
+pub fn load_secrets(path: &Path) -> std::io::Result<Vec<String>> {
+    let file = File::open(path)?;
+    let mut content = String::new();
+    file.take((MAX_SECRETS_FILE_BYTES + 1) as u64)
+        .read_to_string(&mut content)?;
+    if content.len() > MAX_SECRETS_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("secrets file too large ({MAX_SECRETS_FILE_BYTES} bytes max)"),
+        ));
+    }
+    Ok(content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+        .collect())
+}
+
 /// Loads the sensitive-file patterns: one regex per line, `#` comments and
 /// blank lines ignored. Fail-closed: an invalid regex aborts the load.
 pub fn load_sensibles(path: &Path) -> std::io::Result<Vec<regex::Regex>> {
@@ -396,6 +419,40 @@ mod tests {
     fn mask_secrets_ignores_empty_secrets() {
         let s = secrets(&[""]);
         assert_eq!(mask_secrets("abc", &s), "abc");
+    }
+
+    #[test]
+    fn mask_secrets_prefers_longest_secret_leftmost_longest() {
+        let s = secrets(&["abc", "abcdef"]);
+        assert_eq!(mask_secrets("xabcdefy", &s), format!("x{SECRET_MASK}y"));
+    }
+
+    #[test]
+    fn load_secrets_reads_lines_and_skips_comments_and_blanks() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("secrets.txt");
+        std::fs::write(&f, "# comment\ntok-abc123\n\n  spaced-secret  \n").unwrap();
+        let loaded = load_secrets(&f).unwrap();
+        assert_eq!(
+            loaded,
+            vec!["tok-abc123".to_string(), "spaced-secret".to_string()]
+        );
+    }
+
+    #[test]
+    fn load_secrets_rejects_oversized_file_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("secrets.txt");
+        std::fs::write(&f, "a".repeat(MAX_SECRETS_FILE_BYTES + 1)).unwrap();
+        assert!(load_secrets(&f).is_err());
+    }
+
+    #[test]
+    fn load_secrets_rejects_invalid_utf8_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("secrets.txt");
+        std::fs::write(&f, b"ok\n\xff\xfe\n").unwrap();
+        assert!(load_secrets(&f).is_err());
     }
 
     #[test]

@@ -634,8 +634,22 @@ fn expand_vars(text: &str, vars: &HashMap<String, String>) -> Result<String, Par
     Ok(out)
 }
 
+/// True when `text` looks like a glob. Any raw metacharacter (`*`, `?`, `[`,
+/// `{`) marks the text as a glob even when the expression is invalid — it is
+/// then refused fail-closed at expansion (`InvalidGlob`) instead of being fed
+/// literally to `resolve()`. Without raw metacharacters we defer to the glob
+/// engine itself: `wax::Glob::partition` reports a variant part only when the
+/// expression holds patterns (e.g. a case flag like `(?i)`); expressions that
+/// do not parse at all (e.g. a lone backslash) stay literal so `resolve()`
+/// keeps classifying them (e.g. `denied` Windows-style path).
 pub fn has_glob(text: &str) -> bool {
-    text.contains('*') || text.contains('?')
+    if text.contains(['*', '?', '[', '{']) {
+        return true;
+    }
+    match wax::Glob::new(text) {
+        Ok(glob) => matches!(glob.partition(), (_, Some(_))),
+        Err(_) => false,
+    }
 }
 
 pub fn expand_globs(
@@ -1030,6 +1044,26 @@ mod tests {
         };
         assert!(cmd.argv[1].glob);
         assert!(!cmd.argv[0].glob);
+    }
+
+    #[test]
+    fn has_glob_matches_wax_metacharacters() {
+        for g in [
+            "*.rs",
+            "a?c",
+            "a[bc].txt",
+            "a{b,c}.txt",
+            "**/*.md",
+            "a[.txt",
+            "?**",
+        ] {
+            assert!(has_glob(g), "expected glob: {g}");
+        }
+        // No raw metacharacter and not a valid variant glob: stays literal so
+        // `resolve()` keeps its own classification (denied Windows-style path).
+        for lit in ["plain.txt", "src/a.rs", "", "a\\b", "C:\\foo"] {
+            assert!(!has_glob(lit), "expected literal: {lit}");
+        }
     }
 
     #[test]
