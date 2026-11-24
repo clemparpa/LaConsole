@@ -52,6 +52,20 @@ Chaque sous-processus est spawné via le helper arg0 (déjà prévu dans
 qui applique le confinement **dans l'enfant, juste avant exec**. Le profil est
 généré depuis l'entrée TOML (`trusted.toml`) + les `Limits` globaux.
 
+> ✅ **Décision actée (2026-11-24)** : le backend retenu est la crate **`nono`**
+> (nolabs-ai, Apache-2.0 — Landlock sur Linux ≥ 5.13, Seatbelt sur macOS, WSL2
+> pour Windows), épinglée à une version exacte et auditée avant chaque bump.
+> Toute référence à `nono::` vit dans une **couche d'abstraction unique**
+> (`src/sandbox_backend.rs` : `apply(profile) -> Result<(), denied>` +
+> `support_info()`), de sorte qu'un breaking change de nono (pre-1.0) ne touche
+> qu'un seul fichier. Fail-closed : backend non supporté (noyau < 5.13, ABI
+> Landlock réseau < v4, pas de Seatbelt) → `denied`. **Reste chez nous** : proxy
+> réseau fin (allowlist de domaines + anti-DNS-rebinding), limites
+> `mem_bytes`/`cpus`/`max_write_bytes` (rlimits `nix` dans le helper — non
+> couvert par nono hors cgroups Linux), lanceur WSL2 (`wsl.exe` ; Windows natif
+> fail-closed, nono tourne dans WSL2), timeout + kill du groupe (`platform.rs`,
+> inchangé).
+
 - **macOS — Seatbelt** : profil SBPL généré + `sandbox-exec -p "<profil>"`
   (API publique, spawn de binaire, zéro FFI/`unsafe` chez nous). Règles :
   fichiers allow = root + répertoires d'écriture déclarés ; `(deny network*)`

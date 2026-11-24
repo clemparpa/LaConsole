@@ -114,13 +114,18 @@ La v1 est Unix-only (Linux + macOS), documenté.
   limites backend restent refusés fail-closed. `unshare` dans `sandbox.rs`
   reste volontairement Linux-only (c'est le mode serveur). Spec : `spec/platform.md` ;
   backends OS (seatbelt/WSL2/landlock) : `spec/platforms.md`.
-- 🚧 **Backends de confinement OS** : macOS = **seatbelt** (`sandbox-exec`, profil
-  SBPL généré par entrée), Windows = console dans **WSL2** (VM utilitaire,
-  ponts host désactivés sauf déclarés : interop `.exe`, `/mnt/c`, réseau, socket
-  docker), Linux = landlock par spawn + cage userns+chroot existante ; c'est
-  aussi le backend qui appliquera les limites par entrée de `trusted.toml`
-  (`max_write_bytes`/`mem_bytes`/`cpus`/`network`, refusées fail-closed
-  entre-temps) (cf. `spec/platforms.md`, `spec/security.md`).
+- 🚧 **Backends de confinement OS** — ✅ décision actée (2026-11-24) : backend
+  retenu = crate **`nono`** (Landlock Linux / Seatbelt macOS / WSL2 pour Windows)
+  via une **couche d'abstraction unique** `src/sandbox_backend.rs`
+  (`apply(profile)` + `support_info()` ; un breaking change pre-1.0 de nono ne
+  touche que ce fichier ; version épinglée + auditée avant bump). Reste à livrer :
+  helper arg0 `__sandbox_helper <profil.json> -- <cmd…>` + profil depuis
+  `trusted.toml` + `Limits`, proxy réseau fin (allowlist de domaines +
+  anti-DNS-rebinding), rlimits `nix` pour les limites par entrée
+  `max_write_bytes`/`mem_bytes`/`cpus`/`network` (refusées fail-closed entre-temps
+  — non couvert par nono hors cgroups Linux), lanceur WSL2 (`wsl.exe` ; Windows
+  natif fail-closed, nono tourne dans WSL2). La cage userns+chroot du mode serveur
+  est supprimée (décision 1). (cf. `spec/platforms.md` §3, `spec/security.md`).
 - 🚧 **Commandes `git` en whitelist** : read-only d'abord (`status`/`diff`/`log`/
   `show`/`branch`/`rev-parse`, in-process via `git2`) ; mutations (`add`,
   `commit`, `push`…) restent `trusted` (cf. `spec/commands.md`).
