@@ -13,6 +13,25 @@ Document de travail, non indexé dans `spec/README.md`.
 2. **`platform.rs` : renommer `unix` → `macos`** — la cible visée est macOS, pas Linux
    générique : `platform/unix.rs` devient `platform/macos.rs` (et `cfg(unix)` devient
    `cfg(target_os = "macos")` là où c'est pertinent). Windows natif reste fail-closed tel quel.
+3. **Piste à discuter — pas encore décidé — backend sandbox OS via la crate `nono`**
+   (nolabs-ai, Apache-2.0, v0.79 pre-1.0, ~28K SLoC) au lieu de nos backends maison :
+   - Couvre : Landlock (Linux ≥ 5.13, réseau noyau ≥ 6.7) + Seatbelt (macOS), appliqués
+     in-process et irréversibles via `Sandbox::apply_auto(&CapabilitySet)`, hérités par tous
+     les enfants — colle exactement avec notre helper arg0 `__sandbox_helper <profil> -- <cmd…>`
+     prévu dans `spec/plugins.md` ; FS en allow-list (root + répertoires d'écriture déclarés) ;
+     réseau `block_network()` / allowlist de hosts via `nono-proxy` (proxy localhost,
+     anti-DNS-rebinding 169.254.0.0/16 — couvre notre blocage 169.254.169.254).
+   - Windows : pas de natif, WSL2 uniquement (Landlock dans la VM) — inchangé par rapport à
+     notre spec (la console tourne dans WSL2).
+   - **Non couvert** : `mem_bytes`/`cpus` (cgroups Linux seulement, rien sur macOS via Seatbelt),
+     `max_write_bytes` (quota disque hors scope Landlock/Seatbelt) → ces limites restent
+     refusées fail-closed hors Linux, ou à faire autrement (rlimits dans le helper).
+   - **Points d'audit** : dépendance pre-1.0 de 28K SLoC à épingler (`cargo deny`/`audit`
+     couvrent licences + advisories, pas la revue de code) ; sur macOS la crate fait de la FFI
+     sur l'API privée Apple `sandbox_init` (stable, utilisée par les apps Apple) — aucun
+     `unsafe` chez nous (`#![forbid(unsafe_code)]` intact), mais surface externe à auditer.
+     Alternative : garder notre approche maison (profil SBPL généré + `sandbox-exec` en spawn,
+     crate `landlock` officielle) = zéro grosse dépendance, API publique uniquement.
 
 ## A. Ce qui est livré dans le code (PR #2 → #41)
 
@@ -59,7 +78,7 @@ Document de travail, non indexé dans `spec/README.md`.
 
 ## B. Prévu mais PAS fait (backlog — specs seulement, aucun code)
 
-1. **Backends de confinement OS par spawn** : seatbelt (macOS, `sandbox-exec` + profil SBPL), landlock (Linux), WSL2 (Windows), via helper arg0 `la-console __sandbox_helper <profil.json> -- <cmd…>`. Rien dans le code (seuls des commentaires, ex. `trusted.rs:37`, `platform/windows.rs:3`). C'est aussi ce backend qui appliquera `max_write_bytes`/`mem_bytes`/`cpus`/`network` de `trusted.toml`. (La cage userns+chroot du mode serveur, elle, est supprimée — décision 1.)
+1. **Backends de confinement OS par spawn** : seatbelt (macOS, `sandbox-exec` + profil SBPL), landlock (Linux), WSL2 (Windows), via helper arg0 `la-console __sandbox_helper <profil.json> -- <cmd…>`. Rien dans le code (seuls des commentaires, ex. `trusted.rs:37`, `platform/windows.rs:3`). C'est aussi ce backend qui appliquera `max_write_bytes`/`mem_bytes`/`cpus`/`network` de `trusted.toml`. (La cage userns+chroot du mode serveur, elle, est supprimée — décision 1.) **Option** : la crate `nono` (décision 3, à discuter) couvre Landlock+Seatbelt+réseau en une dépendance.
 2. **Lanceur WSL2** pour Windows réel (`wsl.exe`, traduction de chemins, fermeture des ponts `/mnt/c`, interop `.exe`, réseau NAT, socket docker).
 3. **Commandes `git` whitelist read-only** (`status`/`diff`/`log`/`show`/`branch`/`rev-parse`, via `git2` ou binaire épinglé) — mutations restent `trusted`.
 4. **`plugins.json` + `plugins.rs`** : binaires épinglés par l'humain (`--plugins-file`/`--plugins-sha256`), sous-commandes, `url_hosts`, limites — zéro code.
