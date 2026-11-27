@@ -32,6 +32,10 @@ incrémental. `#![forbid(unsafe_code)]` dans `lib.rs` pour traduire « aucun
   `{ok, code, stdout, stderr, truncated}` — teste le contrat réel appelant ↔
   console. Scénarios de bout en bout (plusieurs commandes dans une même session,
   timeouts, troncature, masquage de secrets) au niveau workspace dans `tests/`.
+  `tests/sandbox_backend.rs` couvre le backend OS (`__sandbox_helper`, profil
+  strict, confinement FS/exec, réseau `none`/`loopback`, champs v3 refusés) :
+  sur Linux/macOS avec backend disponible ; sur Windows natif le helper sort
+  125 (fail-closed) et `trusted` reste `denied` (pas de shell).
 - **Fuzzing (`cargo-fuzz`, libFuzzer coverage-guided)** sur deux cibles :
   `parse_input` (parser shell-words + opérateurs) et `resolve_path` (`resolve()`
   sur un root temporaire), entrées aléatoires (bytes, unicode, chemins

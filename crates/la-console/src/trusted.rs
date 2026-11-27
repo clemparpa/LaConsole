@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -83,7 +83,11 @@ pub struct TrustedEntry {
 }
 
 impl TrustedEntry {
-    /// First declared limit that requires an OS backend to be enforced.
+    /// First declared limit that is **deferred to v3** and therefore refused
+    /// fail-closed at execution time (decision 2026-11-27): `max_write_bytes`,
+    /// `mem_bytes`, `cpus`, `network = "proxy"`. `network = "none"` /
+    /// `"loopback"` are enforced by the OS sandbox backend (v2,
+    /// `sandbox_backend.rs`) and are NOT refused here.
     pub fn backend_limit(&self) -> Option<&'static str> {
         if self.max_write_bytes.is_some() {
             Some("max_write_bytes")
@@ -91,8 +95,8 @@ impl TrustedEntry {
             Some("mem_bytes")
         } else if self.cpus.is_some() {
             Some("cpus")
-        } else if self.network.is_some() {
-            Some("network")
+        } else if self.network == Some(NetworkMode::Proxy) {
+            Some("network = \"proxy\"")
         } else {
             None
         }
@@ -358,6 +362,8 @@ pub(crate) fn run(
     ctx: &Ctx,
     _quota: &Arc<DiskQuota>,
 ) -> Result<RawOutput, ExecError> {
+    #[cfg(test)]
+    ensure_test_bin();
     let Some(registry) = ctx.trusted.as_ref() else {
         return Err(ExecError::Denied(
             "trusted commands are not configured (--trusted-file)".to_string(),
@@ -377,7 +383,7 @@ pub(crate) fn run(
     let entry = registry.get(&name_arg.text).map_err(trusted_to_exec)?;
     if let Some(field) = entry.backend_limit() {
         return Err(ExecError::Denied(format!(
-            "trusted entry '{}' declares '{field}' but no OS sandbox backend is available to enforce it yet (fail-closed)",
+            "trusted entry '{}' declares '{field}' which is deferred to v3 and not enforced yet — denied fail-closed",
             entry.name
         )));
     }
@@ -404,6 +410,19 @@ pub(crate) fn run(
     exec_trusted(entry, args, ctx, registry.home())
 }
 
+/// Binary re-exec'd with the `__sandbox_helper` arg0 (our own executable).
+fn helper_exe() -> PathBuf {
+    // Under `cargo test --lib`, `current_exe()` is the test harness binary;
+    // the tests point LACONSOLE_TEST_BIN at the real `la-console` binary.
+    // (Test-only override: the console process env is set by the harness, not
+    // by the agent — the JSON protocol cannot set it.)
+    #[cfg(test)]
+    if let Some(p) = std::env::var_os("LACONSOLE_TEST_BIN") {
+        return PathBuf::from(p);
+    }
+    std::env::current_exe().expect("current_exe failed")
+}
+
 fn exec_trusted(
     entry: &TrustedEntry,
     args: &[Arg],
@@ -418,10 +437,46 @@ fn exec_trusted(
             "trusted commands are not available on this platform (no shell)".to_string(),
         ));
     };
-    let mut command = Command::new(sh);
-    command.arg("-c");
+    // The OS sandbox backend must be available: without it, trusted commands
+    // are denied fail-closed — never exec'd unsandboxed (spec/sandbox-backend.md).
+    let support = crate::sandbox_backend::support_info();
+    if !support.is_supported {
+        return Err(ExecError::Denied(format!(
+            "OS sandbox backend unavailable ({}) — denied fail-closed",
+            support.details
+        )));
+    }
+    let root = platform::canonicalize(ctx.resolver.root())
+        .map_err(|err| ExecError::Fail(format!("cannot canonicalize root: {err}")))?;
+    let network = match entry.network {
+        None | Some(NetworkMode::None) => crate::sandbox_backend::ProfileNetwork::None,
+        Some(NetworkMode::Loopback) => crate::sandbox_backend::ProfileNetwork::Loopback,
+        // Refused earlier by `backend_limit()`.
+        Some(NetworkMode::Proxy) => unreachable!("network = \"proxy\" is refused fail-closed"),
+    };
+    let profile = crate::sandbox_backend::SandboxProfile::new(root, network);
+    let profile_json = profile
+        .to_json()
+        .map_err(|err| ExecError::Fail(format!("cannot serialize sandbox profile: {err}")))?;
+    // The profile file holds paths + network mode only (never a secret); it is
+    // created 0600 with an unpredictable name and read by the child before the
+    // sandbox is applied, then removed on drop.
+    let mut profile_file = tempfile::NamedTempFile::new()
+        .map_err(|err| ExecError::Fail(format!("cannot create profile temp file: {err}")))?;
+    profile_file
+        .write_all(&profile_json)
+        .and_then(|()| profile_file.flush())
+        .map_err(|err| ExecError::Fail(format!("cannot write sandbox profile: {err}")))?;
+    // Spawn via the helper arg0: re-exec of our own binary, which applies the
+    // OS sandbox (FS + exec + network) just before exec'ing the shell.
+    let mut command = Command::new(helper_exe());
     platform::set_new_process_group(&mut command);
     command
+        .arg(crate::sandbox_backend::HELPER_ARG0)
+        .arg(profile_file.path())
+        .arg("--")
+        .arg(sh)
+        .arg("-c")
         .arg(&script)
         .arg(format!("trusted-{}", entry.name))
         .args(args.iter().map(|a| &a.text))
@@ -475,11 +530,61 @@ fn run_child(mut command: Command, timeout_secs: u64) -> Result<RawOutput, ExecE
         }
     };
     let (stdout, stderr) = reader.join().unwrap_or_else(|_| (Vec::new(), Vec::new()));
+    let code = platform::exit_code(&status);
+    if code == u16::from(crate::sandbox_backend::HELPER_FAILURE_EXIT_CODE) {
+        // The sandbox helper refused to exec (bad profile, backend
+        // unavailable, apply/exec failure): denied fail-closed — the command
+        // never ran unsandboxed.
+        return Err(ExecError::Denied(format!(
+            "sandbox helper refused to run the command (fail-closed): {}",
+            String::from_utf8_lossy(&stderr).trim()
+        )));
+    }
     Ok(RawOutput {
-        code: platform::exit_code(&status),
+        code,
         stdout,
         stderr,
     })
+}
+
+/// Under `cargo test --lib`, `current_exe()` is the test harness binary;
+/// point `LACONSOLE_TEST_BIN` at the real `la-console` binary built next to
+/// it (target/<profile>/la-console) so the `__sandbox_helper` re-exec works
+/// in unit tests.
+#[cfg(test)]
+fn ensure_test_bin() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        if std::env::var_os("LACONSOLE_TEST_BIN").is_some() {
+            return;
+        }
+        // Locate the real `la-console` binary: walk up from current_exe()
+        // (target/<profile>/deps/la_console-<hash>) to the profile dir.
+        let exe = std::env::current_exe().unwrap();
+        let mut found = None;
+        for ancestor in exe.ancestors().skip(1) {
+            let candidate = ancestor.join("la-console");
+            if candidate.is_file() {
+                found = Some(candidate);
+                break;
+            }
+        }
+        let bin = found.unwrap_or_else(|| {
+            let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let workspace = manifest.parent().expect("workspace root");
+            let target = std::env::var_os("CARGO_TARGET_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| workspace.join("target"));
+            target.join("debug").join("la-console")
+        });
+        assert!(
+            bin.is_file(),
+            "la-console binary not found at {} — run `cargo test` (without `--lib`) so the bin is built",
+            bin.display()
+        );
+        std::env::set_var("LACONSOLE_TEST_BIN", &bin);
+    });
 }
 
 #[cfg(test)]
@@ -894,6 +999,50 @@ mod tests {
             matches!(err, ExecError::Denied(ref m) if m.contains("mem_bytes") && m.contains("fail-closed")),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn network_none_and_loopback_are_not_backend_limits() {
+        for net in ["none", "loopback"] {
+            let content = format!("[commands.x]\ncommand = \"true\"\nnetwork = \"{net}\"\n");
+            let entries = parse_toml_entries(&content).unwrap();
+            assert_eq!(entries["x"].backend_limit(), None, "network = {net}");
+        }
+    }
+
+    #[test]
+    fn network_proxy_is_a_deferred_v3_backend_limit_denied_fail_closed() {
+        let content = "[commands.x]\ncommand = \"true\"\nnetwork = \"proxy\"\n";
+        let entries = parse_toml_entries(content).unwrap();
+        assert_eq!(entries["x"].backend_limit(), Some("network = \"proxy\""));
+        let dir = tempfile::tempdir().unwrap();
+        let (_trusted_dir, registry) = registry_for(dir.path(), content, Some(sha_of(content)));
+        let ctx = ctx_with(&dir, Some(registry));
+        let err = run_cmd(&ctx, "trusted x").unwrap_err();
+        assert!(
+            matches!(err, ExecError::Denied(ref m) if m.contains("proxy") && m.contains("fail-closed")),
+            "got {err:?}"
+        );
+    }
+
+    // Landlock net rules are port-only (no IP filtering), so loopback-only is
+    // denied fail-closed on Linux (the helper exits HELPER_FAILURE_EXIT_CODE).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn network_loopback_is_denied_fail_closed_on_linux() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "[commands.x]\ncommand = \"true\"\nnetwork = \"loopback\"\n";
+        let (_trusted_dir, registry) = registry_for(dir.path(), content, Some(sha_of(content)));
+        let ctx = ctx_with(&dir, Some(registry));
+        let err = run_cmd(&ctx, "trusted x").unwrap_err();
+        match err {
+            ExecError::Denied(m) => {
+                if crate::sandbox_backend::supported() {
+                    assert!(m.contains("loopback"), "got: {m}");
+                }
+            }
+            other => panic!("expected denied, got {other:?}"),
+        }
     }
 
     // Spawns a real shell: macOS/Linux-only (on Windows native, trusted is denied).

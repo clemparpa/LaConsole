@@ -73,11 +73,18 @@ L'exécution se fait dans un shell réduit : `cwd = root`,
 environnement minimal (`HOME` hors du root), stdin fermé, **aucun
 `ulimit`** — le timeout wall-clock + kill du groupe de processus est
 appliqué par la console elle-même (`timeout_secs` par entrée, défaut
-`--timeout-secs`). Le backend de confinement OS par spawn (crate `nono`, plan
-[spec/sandbox-backend.md](../spec/sandbox-backend.md)) appliquera en v2 le
-réseau `none` (défaut) / `loopback` ; les limites `network = "proxy"`,
-`max_write_bytes`, `mem_bytes`, `cpus` sont reportées à une v3 et restent
-refusées fail-closed (`denied`) entre-temps (décision 2026-11-27). En pipe,
+`--timeout-secs`). Chaque commande trusted est ensuite spawnée via le
+**backend de confinement OS** (crate `nono` épinglée, voir
+[spec/sandbox-backend.md](../spec/sandbox-backend.md)) : re-exec de notre
+propre binaire (`__sandbox_helper <profil.json> -- <cmd…>`) qui applique le
+sandbox — FS confinée au root en écriture, exec restreint au shell + PATH
+(Linux, landlock), réseau `none` (défaut) — juste avant l'exec ; tout échec
+→ exit code 125 → `denied` fail-closed. `network = "loopback"` marche sur
+macOS (Seatbelt `localhost:*`) et est refusé `denied` sur Linux (les règles
+réseau landlock sont par port, pas par IP — §8 de la spec) ; les limites
+`network = "proxy"`, `max_write_bytes`, `mem_bytes`, `cpus` sont reportées à
+une v3 et restent refusées fail-closed (`denied`) entre-temps (décision
+2026-11-27). En pipe,
 `trusted` n'est accepté qu'en
 tête (`trusted x | grep …`) — jamais alimenté par un pipe, son stdin restant
 fermé. Les arguments de chemin passent par `resolve()` + fichiers sensibles,

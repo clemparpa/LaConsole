@@ -27,6 +27,17 @@ struct Cli {
 }
 
 fn main() {
+    // Hidden arg0: OS sandbox helper (spec/sandbox-backend.md). The trusted
+    // subprocesses are spawned as `la-console __sandbox_helper <profile.json>
+    // -- <cmd...>` — re-exec of our own binary, which applies the sandbox just
+    // before exec. Intercepted before the clap CLI; no flag can disable it.
+    let mut args = std::env::args_os();
+    let _exe = args.next();
+    if let Some(first) = args.next() {
+        if first == std::ffi::OsStr::new(la_console::sandbox_backend::HELPER_ARG0) {
+            la_console::sandbox_backend::run_helper(args.collect());
+        }
+    }
     let cli = Cli::parse();
     if let Err(err) = std::fs::canonicalize(&cli.root) {
         eprintln!("error: cannot resolve root {}: {err}", cli.root.display());

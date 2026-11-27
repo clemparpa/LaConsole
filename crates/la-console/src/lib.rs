@@ -5,6 +5,7 @@ pub mod console;
 pub mod parse;
 pub mod platform;
 pub mod resolve;
+pub mod sandbox_backend;
 pub mod sink;
 pub mod trusted;
 
