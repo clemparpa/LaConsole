@@ -51,19 +51,26 @@ Chaque sous-processus est spawné via le helper arg0 (déjà prévu dans
 qui applique le confinement **dans l'enfant, juste avant exec**. Le profil est
 généré depuis l'entrée TOML (`trusted.toml`) + les `Limits` globaux.
 
-> ✅ **Décision actée (2026-11-24)** : le backend retenu est la crate **`nono`**
-> (nolabs-ai, Apache-2.0 — Landlock sur Linux ≥ 5.13, Seatbelt sur macOS, WSL2
-> pour Windows), épinglée à une version exacte et auditée avant chaque bump.
-> Toute référence à `nono::` vit dans une **couche d'abstraction unique**
-> (`src/sandbox_backend.rs` : `apply(profile) -> Result<(), denied>` +
-> `support_info()`), de sorte qu'un breaking change de nono (pre-1.0) ne touche
-> qu'un seul fichier. Fail-closed : backend non supporté (noyau < 5.13, ABI
-> Landlock réseau < v4, pas de Seatbelt) → `denied`. **Reste chez nous** : proxy
-> réseau fin (allowlist de domaines + anti-DNS-rebinding), limites
-> `mem_bytes`/`cpus`/`max_write_bytes` (rlimits `nix` dans le helper — non
-> couvert par nono hors cgroups Linux), lanceur WSL2 (`wsl.exe` ; Windows natif
-> fail-closed, nono tourne dans WSL2), timeout + kill du groupe (`platform.rs`,
-> inchangé).
+> ✅ **Décision actée (2026-11-24), scope précisé (2026-11-27)** : le backend
+> retenu est la crate **`nono`** (nolabs-ai, Apache-2.0 — Landlock sur Linux
+> ≥ 5.13, Seatbelt sur macOS, WSL2 pour Windows), épinglée à une version exacte
+> et auditée avant chaque bump. Toute référence à `nono::` vit dans une
+> **couche d'abstraction unique** (`src/sandbox_backend.rs` :
+> `apply(profile) -> Result<(), denied>` + `support_info()`), de sorte qu'un
+> breaking change de nono (pre-1.0) ne touche qu'un seul fichier. Fail-closed :
+> backend non supporté (noyau < 5.13, ABI Landlock réseau < v4, pas de
+> Seatbelt) → `denied`.
+>
+> **Scope v2 — plan d'implémentation : [sandbox-backend.md](sandbox-backend.md)**
+> : confinement **FS + exec par spawn** et réseau **`none` (défaut) /
+> `loopback`** via nono ; timeout + kill du groupe inchangés (`platform.rs`).
+> **Reporté à une v3 (décision 2026-11-27 — l'agent est borné par son nombre de
+> tours max)** : proxy réseau fin `network = "proxy"` (allowlist de domaines +
+> anti-DNS-rebinding), rlimits `nix`/cgroups pour `mem_bytes`/`cpus`/
+> `max_write_bytes` (non couvert par nono hors cgroups Linux), lanceur WSL2
+> (`wsl.exe` ; Windows natif fail-closed, nono tourne dans WSL2). Ces limites
+> restent parsées dans `trusted.toml` mais **refusées `denied` fail-closed**
+> tant qu'elles ne sont pas livrées.
 
 - **macOS — Seatbelt** : profil SBPL généré + `sandbox-exec -p "<profil>"`
   (API publique, spawn de binaire, zéro FFI/`unsafe` chez nous). Règles :
@@ -108,29 +115,35 @@ Les limites deviennent :
 
 - **côté console** : timeout wall-clock + kill du fils (déjà en place,
   `run_with_timeout` + `run_child`) ;
-- **par entrée TOML** : `timeout_secs`, `max_write_bytes`, `mem_bytes`,
-  `cpus`, `network` (voir [plugins.md](plugins.md)) → traduites dans le profil
-  du backend (seatbelt / landlock / limites VM WSL2, cgroups délégués si
-  disponibles) ;
+- **par entrée TOML, appliquées par le backend nono (v2 — plan
+  [sandbox-backend.md](sandbox-backend.md))** : `network = "none"` (défaut dès
+  l'arrivée du backend) / `"loopback"` → profil du backend (landlock /
+  seatbelt) ; `timeout_secs` reste côté console (voir [plugins.md](plugins.md)) ;
+- **reportées à une v3 (décision 2026-11-27) et refusées `denied`
+  fail-closed entre-temps** : `network = "proxy"`, `max_write_bytes`,
+  `mem_bytes`, `cpus` — non couverts par nono hors cgroups Linux. Conséquence
+  honnête : sans rlimits/cgroups, le quota disque d'un sous-processus arbitraire
+  ne peut pas être borné en octets en pur userspace sur toutes les plateformes
+  (approximation : FS deny hors root, disque VHD borné en WSL2) ;
 - **écritures disque des commandes whitelist** : inchangé (`FileSink` +
   `DiskQuota` partagés).
 
-Conséquence honnête : sans `ulimit`, le quota disque d'un sous-processus
-arbitraire ne peut pas être borné en pur userspace sur toutes les plateformes —
-il est imposé par le backend (FS deny hors root + répertoires d'écriture
-déclarés, disque VHD borné en WSL2). Une entrée qui déclare des limites sans
-backend disponible = `denied` (fail-closed) — **règle déjà en vigueur** :
-`max_write_bytes`/`mem_bytes`/`cpus`/`network` déclarés dans `trusted.toml`
-sont refusés à l'exécution tant que ce chapitre (backends) n'est pas livré.
+**Règle en vigueur** : `network = "proxy"`, `max_write_bytes`, `mem_bytes`,
+`cpus` déclarés dans `trusted.toml` sont refusés `denied` à l'exécution tant
+qu'ils ne sont pas livrés (v3) ; `network` non déclaré = comportement v1 (réseau
+joignable) jusqu'à l'arrivée du backend, puis défaut `none`.
 
-## 5. Phases proposées
+## 5. Phases
 
-1. `platform.rs` + abstraction des primitives (resolve, exit code, tests) ;
-2. manifeste `trusted.toml` (voir [plugins.md](plugins.md)) + retrait des
-   `ulimit`, limites par entrée appliquées par le backend ;
-3. backend macOS seatbelt (helper arg0 + profils SBPL générés) ;
-4. backend Windows WSL2 (console lancée dans la VM, ponts désactivés sauf
-   déclarés) ;
+1. ✅ `platform.rs` + abstraction des primitives (PR #41) ;
+2. ✅ manifeste `trusted.toml` + retrait des `ulimit` (PR #39) ;
+3. 🚧 **backend par spawn via nono** (plan d'impl :
+   [sandbox-backend.md](sandbox-backend.md)) : `src/sandbox_backend.rs` +
+   helper arg0 `__sandbox_helper`, sandbox FS + exec, réseau `none` (défaut) /
+   `loopback` — une PR, testable, CI verte ;
+4. v3 (reporté, décision 2026-11-27) : `network = "proxy"`, `mem_bytes`,
+   `max_write_bytes`, `cpus` (rlimits/cgroups), lanceur WSL2 (`wsl.exe` ;
+   console lancée dans la VM, ponts désactivés sauf déclarés) ;
 5. commandes `git` whitelist read-only (voir [commands.md](commands.md)).
 
 Chaque phase = une PR indépendante, testable, CI verte (cf. `ROADMAP.md`).

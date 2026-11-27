@@ -49,11 +49,18 @@ sur disque, et empêcher qu'une sortie contamine l'interprétation côté appela
   backend indisponible = `denied`, jamais de mode dégradé, aucun privilège
   requis. Le mode serveur (user namespace + chroot via `unshare`) a été
   **supprimé** (décision 2026-11-24) au profit de ce backend par spawn.
+  **Scope v2 (décision 2026-11-27, plan [sandbox-backend.md](sandbox-backend.md))**
+  : FS + exec par spawn et réseau `none` (défaut) / `loopback` ; `proxy`,
+  `mem_bytes`, `max_write_bytes`, `cpus` et le lanceur WSL2 sont reportés à
+  une v3 et restent `denied` fail-closed entre-temps.
 - **✅ Décision v2 livrée : retrait des `ulimit`** du shell des commandes trusted —
-  remplacés par les limites **par entrée** du manifeste TOML (`timeout_secs`,
-  `max_write_bytes`, `mem_bytes`, `cpus`, `network`), appliquées par le backend
-  OS, plus le timeout wall-clock + kill appliqués par la console elle-même
-  (cf. [platforms.md](platforms.md) §4). Raison : `ulimit -v` n'existe pas sur
+  remplacés par les limites **par entrée** du manifeste TOML. En v2, seul
+  `network = "none"`/`"loopback"` est appliqué par le backend OS (`nono`, plan
+  [sandbox-backend.md](sandbox-backend.md)) ; `network = "proxy"`,
+  `max_write_bytes`, `mem_bytes`, `cpus` restent refusés `denied` fail-closed
+  (reportés v3, décision 2026-11-27), plus le timeout wall-clock + kill
+  appliqués par la console elle-même (cf. [platforms.md](platforms.md) §4).
+  Raison du retrait des `ulimit` : `ulimit -v` n'existe pas sur
   macOS et borne l'address space virtuel, pas la RSS réelle.
 
 ## Fichiers sensibles
