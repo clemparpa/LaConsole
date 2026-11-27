@@ -34,6 +34,15 @@ Document de travail, non indexé dans `spec/README.md`.
    fail-closed ; nono tourne *dans* WSL2), timeout + kill du groupe (`platform.rs`, inchangé).
    Alternative écartée : backends 100 % maison (SBPL + `sandbox-exec` + crate `landlock` officielle +
    mini-proxy maison) ≈ 6 PR / 2–4 semaines + revue sécurité interne. Détails : `spec/platforms.md` §3.
+4. **✅ DÉCISION ACTÉE (2026-11-27) — scope v2 du backend `nono`** : l'intégration
+   livrée en v2 se limite au confinement **FS + exec par spawn** et au réseau
+   **`none` (défaut) / `loopback`** via nono (plan d'impl :
+   `spec/sandbox-backend.md`). **Reporté à une v3** : `network = "proxy"`
+   (allowlist de domaines + anti-DNS-rebinding), `mem_bytes`, `max_write_bytes`,
+   `cpus` (rlimits/cgroups), lanceur WSL2 (`wsl.exe`) — l'agent étant borné par
+   son nombre de tours max, le gain ne justifie pas le coût en v2. Ces limites
+   restent parsées dans `trusted.toml` et **refusées `denied` fail-closed** tant
+   qu'elles ne sont pas livrées.
 
 ## A. Ce qui est livré dans le code (PR #2 → #41)
 
@@ -80,7 +89,7 @@ Document de travail, non indexé dans `spec/README.md`.
 
 ## B. Prévu mais PAS fait (backlog — specs seulement, aucun code)
 
-1. **Backends de confinement OS par spawn** : seatbelt (macOS, `sandbox-exec` + profil SBPL), landlock (Linux), WSL2 (Windows), via helper arg0 `la-console __sandbox_helper <profil.json> -- <cmd…>`. Rien dans le code (seuls des commentaires, ex. `trusted.rs:37`, `platform/windows.rs:3`). C'est aussi ce backend qui appliquera `max_write_bytes`/`mem_bytes`/`cpus`/`network` de `trusted.toml`. (La cage userns+chroot du mode serveur, elle, est supprimée — décision 1.) **Option retenue** : la crate `nono` (décision 3 actée) couvre Landlock+Seatbelt+réseau en une dépendance, via `src/sandbox_backend.rs`.
+1. **Backends de confinement OS par spawn** : via helper arg0 `la-console __sandbox_helper <profil.json> -- <cmd…>`. Rien dans le code (seuls des commentaires, ex. `trusted.rs:37`, `platform/windows.rs:3`). **Option retenue** : la crate `nono` (décision 3 actée) via `src/sandbox_backend.rs`. **Scope v2 (décision 4, 2026-11-27 — plan `spec/sandbox-backend.md`)** : FS + exec par spawn (landlock/seatbelt) + réseau `none` (défaut) / `loopback` ; `proxy` / `mem_bytes` / `max_write_bytes` / `cpus` et le lanceur WSL2 reportés v3, restent `denied` fail-closed. (La cage userns+chroot du mode serveur, elle, est supprimée — décision 1.)
 2. **Lanceur WSL2** pour Windows réel (`wsl.exe`, traduction de chemins, fermeture des ponts `/mnt/c`, interop `.exe`, réseau NAT, socket docker).
 3. **Commandes `git` whitelist read-only** (`status`/`diff`/`log`/`show`/`branch`/`rev-parse`, via `git2` ou binaire épinglé) — mutations restent `trusted`.
 4. **`plugins.json` + `plugins.rs`** : binaires épinglés par l'humain (`--plugins-file`/`--plugins-sha256`), sous-commandes, `url_hosts`, limites — zéro code.

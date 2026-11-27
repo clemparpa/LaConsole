@@ -90,10 +90,11 @@ retirés. Le confinement noyau passe désormais par le backend par spawn
   `denied` fail-closed ; plus d'`ulimit` dans le shell — la console
   applique le timeout wall-clock + kill du **groupe de processus**
   (`process_group(0)`, `timeout_secs` par entrée, défaut `--timeout-secs`) ;
-  les limites `max_write_bytes`/`mem_bytes`/`cpus`/`network` sont refusées
-  `denied` fail-closed tant qu'aucun backend OS n'existe, et seront appliquées
-  par le backend à la fournée suivante (cf. `spec/platforms.md` §4,
-  `spec/plugins.md`). `help` liste les entrées avec leurs limites.
+  `network = "none"`/`"loopback"` seront appliquées par le backend nono à la
+  fournée suivante (plan `spec/sandbox-backend.md`) ; `network = "proxy"`,
+  `max_write_bytes`/`mem_bytes`/`cpus` restent refusées `denied` fail-closed
+  (reportées v3, décision 2026-11-27). `help` liste les entrées avec leurs
+  limites.
 - ✅ **Architecture multi-plateforme — phase 1** (cette PR) : couche
   d'abstraction `platform.rs` (`platform/macos.rs` + `platform/windows.rs`,
   fonctions libres, fail-closed par défaut) ; branchements `resolve.rs`
@@ -116,18 +117,21 @@ retirés. Le confinement noyau passe désormais par le backend par spawn
   `platform.rs`, branchements `resolve.rs`/`trusted.rs`, tests) — aucun
   changement de sémantique ; commentaires/noms de tests ajustés ; docs
   (`spec/platform.md`, `spec/platforms.md`, `spec/structure.md`) à jour.
-- 🚧 **Backends de confinement OS** — ✅ décision actée (2026-11-24) : backend
-  retenu = crate **`nono`** (Landlock Linux / Seatbelt macOS / WSL2 pour Windows)
-  via une **couche d'abstraction unique** `src/sandbox_backend.rs`
-  (`apply(profile)` + `support_info()` ; un breaking change pre-1.0 de nono ne
-  touche que ce fichier ; version épinglée + auditée avant bump). Reste à livrer :
-  helper arg0 `__sandbox_helper <profil.json> -- <cmd…>` + profil depuis
-  `trusted.toml` + `Limits`, proxy réseau fin (allowlist de domaines +
-  anti-DNS-rebinding), rlimits `nix` pour les limites par entrée
-  `max_write_bytes`/`mem_bytes`/`cpus`/`network` (refusées fail-closed entre-temps
-  — non couvert par nono hors cgroups Linux), lanceur WSL2 (`wsl.exe` ; Windows
-  natif fail-closed, nono tourne dans WSL2). La cage userns+chroot du mode serveur
-  est supprimée (décision 1). (cf. `spec/platforms.md` §3, `spec/security.md`).
+- 🚧 **Backend de confinement OS par spawn — crate `nono`** — plan d'impl :
+  `spec/sandbox-backend.md` (décisions 2026-11-24 + 2026-11-27). Scope v2 (une
+  PR) : `src/sandbox_backend.rs` (unique module `nono::`, dep épinglée `=`
+  + auditée avant bump), helper arg0 `__sandbox_helper <profil.json> -- <cmd…>`
+  + profil depuis `trusted.toml` + `Limits`, sandbox **FS + exec par spawn**
+  (landlock Linux ≥ 5.13 / seatbelt macOS / WSL2), réseau **`none` (défaut) /
+  `loopback`** via nono ; timeout + kill du groupe inchangés (`platform.rs`).
+  **Reporté à une v3 (décision 2026-11-27 : l'agent est borné par son nombre de
+  tours max)** : `network = "proxy"` (allowlist de domaines +
+  anti-DNS-rebinding), `mem_bytes`, `max_write_bytes`, `cpus` (rlimits `nix` /
+  cgroups — non couvert par nono hors cgroups Linux), lanceur WSL2 (`wsl.exe` ;
+  Windows natif fail-closed) — ces limites restent parsées dans
+  `trusted.toml` mais **refusées `denied` fail-closed** tant qu'elles ne sont
+  pas livrées. La cage userns+chroot du mode serveur est supprimée (décision 1).
+  (cf. `spec/sandbox-backend.md`, `spec/platforms.md` §3, `spec/security.md`).
 - 🚧 **Commandes `git` en whitelist** : read-only d'abord (`status`/`diff`/`log`/
   `show`/`branch`/`rev-parse`, in-process via `git2`) ; mutations (`add`,
   `commit`, `push`…) restent `trusted` (cf. `spec/commands.md`).

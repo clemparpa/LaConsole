@@ -73,9 +73,12 @@ L'exécution se fait dans un shell réduit : `cwd = root`,
 environnement minimal (`HOME` hors du root), stdin fermé, **aucun
 `ulimit`** — le timeout wall-clock + kill du groupe de processus est
 appliqué par la console elle-même (`timeout_secs` par entrée, défaut
-`--timeout-secs`) ; les limites `max_write_bytes`/`mem_bytes`/`cpus`/`network`
-nécessitent un backend de sandbox OS et sont refusées fail-closed tant
-qu'aucun backend n'est disponible. En pipe, `trusted` n'est accepté qu'en
+`--timeout-secs`). Le backend de confinement OS par spawn (crate `nono`, plan
+[spec/sandbox-backend.md](../spec/sandbox-backend.md)) appliquera en v2 le
+réseau `none` (défaut) / `loopback` ; les limites `network = "proxy"`,
+`max_write_bytes`, `mem_bytes`, `cpus` sont reportées à une v3 et restent
+refusées fail-closed (`denied`) entre-temps (décision 2026-11-27). En pipe,
+`trusted` n'est accepté qu'en
 tête (`trusted x | grep …`) — jamais alimenté par un pipe, son stdin restant
 fermé. Les arguments de chemin passent par `resolve()` + fichiers sensibles,
 sauf `no_path_check` déclaré dans le manifeste.

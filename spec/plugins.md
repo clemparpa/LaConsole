@@ -71,6 +71,12 @@ d'args **par sous-commande** :
 | `no_path_check` | `true` si l'humain autorise hors-root (défaut `false`) |
 | `subcommands` | map sous-commande → `{ flags: [...], path_flags: [...], url_arg: n }` |
 
+> Note (décision 2026-11-27) : les plugins sont hors v2 (zéro code, backlog) ;
+> quand ils seront livrés (v3+), `network: "proxy"` et `limits` suivront le
+> même descoping que `trusted.toml` : `none`/`loopback` d'abord, le reste
+> `denied` fail-closed tant que non livré (plan
+> [sandbox-backend.md](sandbox-backend.md)).
+
 - `path_flags` → chaque chemin passe par `resolve()` + sensibles ;
 - avant **chaque** exécution : relecture du manifeste brut + comparaison sha256 ;
   mismatch = `denied`, aucune exécution ;
@@ -85,11 +91,13 @@ fail-closed.
 
 > Statut : `command`, `no_path_check` et `timeout_secs` sont appliqués par la
 > console dès maintenant (timeout wall-clock + kill du groupe de processus).
-> `max_write_bytes` / `mem_bytes` / `cpus` / `network` sont validés au parse
-> mais **refusés `denied` à l'exécution tant qu'aucun backend OS n'est
-> disponible** (fail-closed, cf. [platforms.md](platforms.md) §4) ; pendant la
-> migration, `network` non déclaré = comportement v1 (réseau joignable), et
-> le défaut `none` sera appliqué dès l'arrivée des backends.
+> `network = "none"` / `"loopback"` seront appliqués par le backend OS (crate
+> `nono`, plan [sandbox-backend.md](sandbox-backend.md)) ; `network` non
+> déclaré = comportement v1 (réseau joignable) jusqu'à l'arrivée du backend,
+> puis défaut **`none`**. `network = "proxy"`, `max_write_bytes`, `mem_bytes`,
+> `cpus` restent validés au parse mais **refusés `denied` à l'exécution**
+> (fail-closed, reportés à une v3 — décision 2026-11-27, cf.
+> [platforms.md](platforms.md) §4).
 
 ```toml
 # trusted.toml — revu en PR par l'humain, hors du root de l'agent
@@ -104,10 +112,10 @@ description = "Compile le projet en release"
 [commands.test-e2e]
 command = "npm run test:e2e"
 no_path_check = false                 # optionnel (défaut false)
-timeout_secs = 600                    # optionnel, défaut = --timeout-secs global
-max_write_bytes = 268435456           # quota d'écriture disque de la commande
-mem_bytes = 4294967296                # optionnel, appliqué par le backend OS
-network = "none"                      # none (défaut) | loopback | proxy (allowlist de domaines)
+timeout_secs = 600                    # optionnel, défaut = --timeout-secs global (console)
+max_write_bytes = 268435456           # reporté v3 : refusé `denied` tant que non livré
+mem_bytes = 4294967296                # idem (v3)
+network = "none"                      # none (défaut) | loopback : appliqués par le backend nono en v2 ; "proxy" = v3, refusé `denied`
 ```
 
 | Champ | Règle |
@@ -117,9 +125,9 @@ network = "none"                      # none (défaut) | loopback | proxy (allow
 | `flags` | table `"<flag>" = { description = "..." }` : allowlist des arguments `-...` acceptés (`-v`, `--release`, `--jobs=4` ; nom validé `^-{1,2}[A-Za-z0-9][A-Za-z0-9_-]*(=...)?$`) ; tout `-...` non déclaré = `denied` fail-closed, même avec `no_path_check` ; les flags ne passent pas par `resolve()` |
 | `no_path_check` | bool, défaut `false` ; sinon les args-chemins passent par `resolve()` + sensibles |
 | `timeout_secs` | défaut = limite globale ; kill du processus (et du groupe) à la deadline |
-| `max_write_bytes` | **quantité d'écriture disque** de la commande, appliquée par le backend OS (FS deny hors répertoires déclarés) |
-| `mem_bytes`, `cpus` | appliqués par le backend OS (seatbelt/landlock/WSL2) — **plus par `ulimit`** (voir [platforms.md](platforms.md) §4) |
-| `network` | `none` = deny réseau ; `loopback` ; `proxy` = proxy localhost + allowlist de domaines |
+| `max_write_bytes` | **quantité d'écriture disque** de la commande — reporté v3 (décision 2026-11-27) : refusé `denied` fail-closed tant que non livré |
+| `mem_bytes`, `cpus` | idem — reportés v3 (rlimits `nix`/cgroups, non couverts par nono hors cgroups Linux) ; **plus par `ulimit`** (voir [platforms.md](platforms.md) §4) |
+| `network` | `none` (défaut dès le backend) / `loopback` : appliqués par le backend nono en v2 (plan [sandbox-backend.md](sandbox-backend.md)) ; `proxy` = proxy localhost + allowlist de domaines → reporté v3, refusé `denied` |
 
 - Schéma strict (`deny_unknown_fields`, crate `toml` épinglée en direct,
   fail-closed) ; nom `^[A-Za-z_][A-Za-z0-9_-]*$`, doublon = refus total (le
@@ -153,10 +161,12 @@ le confinement **dans l'enfant juste avant exec** — jamais dans le harness
 
 **✅ Décision v2 livrée : les `ulimit` du shell trusted sont retirés** (non portables —
 `ulimit -v` absent sur macOS — et `-v` borne l'address space virtuel, pas la
-RSS réelle). Les limites par entrée du manifeste TOML (`timeout_secs`,
-`max_write_bytes`, `mem_bytes`, `cpus`, `network`) sont appliquées par le
-backend OS ; le timeout wall-clock + kill reste appliqué par la console
-elle-même. Voir [platforms.md](platforms.md) §4.
+RSS réelle). Le timeout wall-clock + kill reste appliqué par la console
+elle-même. **Scope backend (décision 2026-11-27)** : en v2, seuls
+`network = "none"`/`"loopback"` sont appliqués par le backend OS (crate
+`nono`, plan [sandbox-backend.md](sandbox-backend.md)) ; `network = "proxy"`,
+`max_write_bytes`, `mem_bytes`, `cpus` restent refusés `denied` fail-closed
+(reportés v3). Voir [platforms.md](platforms.md) §4.
 
 **Fail-closed par spawn** : backend inapplicable (vieux noyau, sandbox-exec
 absent…) → `denied`, jamais de mode dégradé. **Aucun privilège requis** (jamais
@@ -182,10 +192,11 @@ masquage — jamais délégué au harnais, fail-closed même si le harnais ment.
    fail-closed) puis `plugins.rs` (manifeste JSON strict, spawn sandboxé) ;
    `help` liste les plugins déclarés ;
 4. ✅ Manifeste `trusted.toml` + retrait des `ulimit` livrés : `timeout_secs`
-   et `no_path_check` appliqués par la console (kill du groupe de processus),
-   limites backend (`max_write_bytes`/`mem_bytes`/`cpus`/`network`) refusées
-   fail-closed tant que le backend n'existe pas ; leur application par le
-   backend arrive avec la phase 5 (cf. [platforms.md](platforms.md) §4) ;
+   et `no_path_check` appliqués par la console (kill du groupe de processus) ;
+   `network = "none"`/`"loopback"` seront appliqués par le backend nono
+   (phase 3, plan [sandbox-backend.md](sandbox-backend.md)) ;
+   `network = "proxy"`, `max_write_bytes`/`mem_bytes`/`cpus` restent refusés
+   fail-closed (reportés v3, décision 2026-11-27) ;
 5. Couche d'abstraction plateforme `platform.rs` (macOS/Windows, plus de
    spécifique Linux) puis backends : seatbelt (macOS), WSL2 (Windows) ;
 6. Commandes `git` whitelist read-only (cf. [commands.md](commands.md)).

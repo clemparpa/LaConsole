@@ -305,13 +305,16 @@ possible : elle s'applique à la sortie passée à l'identique, via `FileSink`.
   par la console elle-même : `timeout_secs` par entrée (défaut
   `--timeout-secs`), le fils étant spawné dans son propre groupe de processus
   (`process_group(0)`, kill du groupe à la deadline).
-- Les limites `max_write_bytes` = quantité d'écriture disque, `mem_bytes`,
-  `cpus`, `network` sont **par entrée** dans `trusted.toml`, appliquées par le
-  backend OS (seatbelt / landlock / WSL2). Tant qu'aucun backend n'est
-  disponible, une entrée qui en déclare une est refusée `denied` (fail-closed) ;
-  une entrée sans limite déclarée garde le comportement v1 (réseau joignable,
-  périmètre = revue humaine + checksum) — voir [platforms.md](platforms.md) §4
-  et [plugins.md](plugins.md).
+- Les limites **par entrée** dans `trusted.toml` : `network = "none"`
+  (défaut dès l'arrivée du backend) / `"loopback"` sont appliquées en v2 par
+  le backend OS via la crate `nono` (plan :
+  [sandbox-backend.md](sandbox-backend.md)) ; `network = "proxy"`,
+  `max_write_bytes` (quantité d'écriture disque), `mem_bytes`, `cpus` restent
+  **refusés `denied` fail-closed** — reportés à une v3 (décision 2026-11-27 :
+  l'agent est borné par son nombre de tours max). Avant le backend, toute
+  entrée déclarant `network` est refusée `denied` ; sans `network` déclaré,
+  comportement v1 (réseau joignable) jusqu'au backend, puis défaut `none`.
+  Voir [platforms.md](platforms.md) §4 et [plugins.md](plugins.md).
 - `help` liste les entrées trusted avec leurs limites déclarées.
 
 ## Commande `git` (whitelist, planifiée v2)
