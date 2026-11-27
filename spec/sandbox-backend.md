@@ -1,7 +1,8 @@
-# Backend de confinement OS par spawn — plan d'implémentation (`nono`)
+# Backend de confinement OS par spawn — implémentation (`nono`)
 
-> Statut : **plan soumis à revue** (décisions 2026-11-24 et 2026-11-27, voir
-> `docs/etat-des-lieux-2026-11-24.md` décisions 3 et 4). Le backend retenu est
+> Statut : **livré** (décisions 2026-11-24 et 2026-11-27, voir
+> `docs/etat-des-lieux-2026-11-24.md` décisions 3 et 4 ; plan initial ci-dessous,
+> écarts d'implémentation documentés en §8). Le backend retenu est
 > la crate **`nono`** (nolabs-ai, Apache-2.0 — Landlock Linux ≥ 5.13, Seatbelt
 > macOS, WSL2), derrière une **couche d'abstraction unique**
 > `src/sandbox_backend.rs`. Principes inchangés : fail-closed, aucun privilège
@@ -32,9 +33,13 @@ pour désactiver le sandbox.
 
 ## 2. Architecture
 
-- **Dépendance** : `nono` épinglée à une version exacte (`=0.79.x`) dans
-  `Cargo.toml`, `Cargo.lock` committé, `cargo deny` + `cargo audit` dans la
-  CI, revue du diff avant chaque bump (nono est pré-1.0).
+- **Dépendance** : `nono` épinglée à une version exacte (`=0.79.0`) dans
+  `Cargo.toml` (cible `cfg(any(target_os = "macos", target_os = "linux"))`,
+  `default-features = false` pour ne jamais tirer le keyring système),
+  `Cargo.lock` committé, `cargo deny` + `cargo audit` dans la
+  CI, revue du diff avant chaque bump (nono est pré-1.0). `deny.toml` autorise
+  en plus `CDLA-Permissive-2.0` (données des certificats racine Mozilla, via
+  la chaîne transitive nono → sigstore → reqwest 0.13).
 - **Couche unique** : `src/sandbox_backend.rs` est le **seul** module qui
   référence `nono::` — API : `apply(profile: &SandboxProfile) -> Result<(), Denied>`
   + `support_info() -> SupportInfo`. Un breaking change de nono ne touche que
@@ -75,6 +80,11 @@ Mapping vers `CapabilitySet`, fait **uniquement** dans `sandbox_backend.rs` :
   `PATH` réduit ;
 - `network = "none"` → `block_network()` ; `"loopback"` → loopback seule
   (Linux : ABI Landlock réseau ≥ v4 requis, sinon `denied` fail-closed).
+  **Écart constaté à l'implémentation (§8)** : les règles réseau Landlock sont
+  **par port uniquement** (pas de filtrage par IP), donc « loopback seul »
+  n'est **pas** exprimable sur Linux — `loopback` y est refusé `denied`
+  fail-closed ; sur macOS, Seatbelt sait restreindre à `localhost:*`
+  (`allow_localhost_port(0)`), donc `loopback` y fonctionne.
 
 ## 4. Matrice d'application des champs de `trusted.toml`
 
@@ -95,8 +105,10 @@ Mapping vers `CapabilitySet`, fait **uniquement** dans `sandbox_backend.rs` :
 - Entrée `trusted.toml` déclarant `proxy` / `mem_bytes` / `max_write_bytes` /
   `cpus` → `denied` à l'exécution, avec la raison explicite (champ + « reporté
   v3 »).
-- Échec du parse du profil ou de `apply` dans l'enfant → exit code dédié →
-  le parent rend `denied` (jamais d'exec sans sandbox).
+- Échec du parse du profil ou de `apply` dans l'enfant → exit code dédié
+  `125` (`HELPER_FAILURE_EXIT_CODE`) → le parent rend `denied` (jamais d'exec
+  sans sandbox). Une commande trusted qui sortirait elle-même avec le code 125
+  est donc rapportée `denied` — fail-closed assumé.
 
 ## 6. Tests et CI
 
@@ -126,3 +138,33 @@ Mapping vers `CapabilitySet`, fait **uniquement** dans `sandbox_backend.rs` :
    allowlist de domaines + anti-DNS-rebinding 169.254.0.0/16),
    `mem_bytes` / `max_write_bytes` / `cpus` (rlimits `nix` ou cgroups Linux),
    lanceur WSL2 (`wsl.exe`), manifeste `plugins.json` / `plugins.rs`.
+
+## 8. Écarts et constats d'implémentation (audit de la v2 livrée)
+
+- **Landlock réseau = par port, pas par IP** : `landlock_net_port_attr` n'a
+  pas de champ adresse, et les règles « localhost » de nono restent
+  « port-only on Linux » (cf. doc `CapabilitySet::localhost_ports`). Autoriser
+  une plage de ports 1–65535 autoriserait en fait **toute** connexion TCP
+  externe — un mode dégradé interdit par le principe fail-closed. Donc :
+  `network = "loopback"` est **refusé `denied` sur Linux** (avec la raison
+  explicite) et **fonctionne sur macOS** (Seatbelt `localhost:*`). `none`
+  fonctionne partout (aucune règle réseau Landlock = tout TCP refusé ;
+  repli seccomp `BlockAll` de nono si ABI < v4).
+- **Exécution confinée** : sur Linux, `Sandbox::restrict_execute` (couche
+  Landlock n°2, ABI ≥ v3 sinon `denied`) restreint l'exec au shell
+  (`platform::shell()`) + répertoires du PATH réduit + répertoires système
+  read-only (qui contiennent le PATH) — jamais sous le root ni /tmp. Sur
+  macOS, nono 0.79 émet `(allow process-exec*)` (ouverture seulement corrigée
+  dans des versions ultérieures de nono) : le confinement repose alors sur les
+  octrois read-only du FS. Constat à réévaluer à chaque bump de nono.
+- **Exit code dédié 125** : voir §5. Le helper ne reçoit aucun flag de
+  désactivation ; il est spawné par la console avec un env réduit
+  (`env_clear` + `HOME`/`LANG`/`PATH`), lit le profil (créé 0600 par
+  `tempfile`, relu avant apply, supprimé à la fin) puis applique le sandbox
+  juste avant `exec`.
+- **Tests** : `crates/la-console/tests/sandbox_backend.rs` (e2e : usage du
+  helper, profil strict, confinement FS/exec, réseau `none` bloque même la
+  loopback, `loopback` refusé sur Linux / OK sur macOS, champs v3 refusés,
+  commandes usuelles sandboxées) + tests unitaires et proptest dans
+  `src/sandbox_backend.rs` (profil strict, mapping, « jamais de champ inconnu
+  ni de secret »).

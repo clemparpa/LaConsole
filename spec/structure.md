@@ -20,13 +20,14 @@ la-console/
         commands/     # whitelist: cat, ls, echo, grep, sed, sub, http + filtres de flux head/tail/wc/sort/uniq/cut/tr (stream.rs = helpers communs)
         trusted.rs    # commandes trusted : manifeste TOML strict (trusted.toml, seul format accepté), checksum sha256, exécution shell réduite (/bin/sh via platform::shell()) ; plus d'ulimit : timeout/kill du groupe de processus par la console
         platform.rs   # couche d'abstraction OS (spec/platform.md) : primitives fs (identité fichier, canonicalize), spawn + kill de l'arbre, exit code, shell — impls platform/macos.rs (cfg(any(target_os = "macos", target_os = "linux")); macOS = cible visée, Linux = même code) / platform/windows.rs (cfg(windows)), fail-closed sur Windows natif
-        sandbox_backend.rs  # backend de confinement OS par spawn (plan : spec/sandbox-backend.md) : SEUL module référençant la crate `nono` épinglée (`apply(profile)` + `support_info()`) + helper arg0 `__sandbox_helper <profil.json> -- <cmd…>` ; scope v2 = FS/exec + réseau none/loopback ; proxy/mem_bytes/max_write_bytes/cpus reportés v3 (restent `denied`)
+        sandbox_backend.rs  # ✅ backend de confinement OS par spawn (spec/sandbox-backend.md) : SEUL module référençant la crate `nono` épinglée `nono = "=0.79.0"` (cible macos/linux, `default-features = false`) — `apply(profile)` + `support_info()` + helper arg0 `__sandbox_helper <profil.json> -- <cmd…>` (exit code dédié 125 → `denied`) ; v2 livrée = FS (root RW, système RO) + exec (shell + PATH, landlock) + réseau `none` (défaut) ; `loopback` OK sur macOS, refusé `denied` sur Linux (règles landlock par port sans IP — spec §8) ; proxy/mem_bytes/max_write_bytes/cpus reportés v3 (restent `denied` fail-closed)
         sink.rs       # trait Sink + FileSink / CallerSink / PipeSink
       tests/
         evasion.rs    # tests d'évasion (.., symlinks, absolus, unicode...)
         parse.rs      # proptests du parser (jamais de trusted dans un pipe, jamais de sous-exécution)
         commands.rs
         e2e.rs        # spawn du binaire, protocole JSON ligne par ligne
+        sandbox_backend.rs  # e2e du backend OS : helper `__sandbox_helper`, profil strict, confinement FS/exec, réseau none/loopback, champs v3 refusés
   tests/              # tests d'intégration haut niveau (niveau workspace)
   fuzz/
     Cargo.toml
@@ -54,7 +55,7 @@ la-console/
 | Checksum sha256 des commandes trusted | `sha2` |
 | Regex des fichiers sensibles | `regex` (temps linéaire, pas de ReDoS) |
 | Limites du sous-processus trusted | ✅ `ulimit` retiré ; timeout/kill du groupe de processus par la console (std, pas d'`unsafe`) ; `network = "none"`/`"loopback"` appliquées en v2 par le backend OS (ligne `nono` ci-dessous) ; `network = "proxy"`/`max_write_bytes`/`mem_bytes`/`cpus` refusés fail-closed, reportés v3 (décision 2026-11-27) |
-| Backend de confinement OS par spawn (v2) | `nono` (nolabs-ai, Apache-2.0 — landlock Linux ≥ 5.13 / seatbelt macOS / WSL2), épinglée `=x.y.z`, `Cargo.lock` committé, auditée (`cargo deny` + `cargo audit`) avant chaque bump ; référence unique dans `sandbox_backend.rs` (plan : spec/sandbox-backend.md) |
+| Backend de confinement OS par spawn (v2) ✅ | `nono` (nolabs-ai, Apache-2.0 — landlock Linux ≥ 5.13 / seatbelt macOS / WSL2), épinglée `=0.79.0` (cible `cfg(any(target_os = "macos", target_os = "linux"))`, `default-features = false`), `Cargo.lock` committé, auditée (`cargo deny` + `cargo audit`) avant chaque bump ; référence unique dans `sandbox_backend.rs` (spec/sandbox-backend.md) |
 | Manifeste TOML `trusted.toml` | `toml` (épinglé en direct) |
 | Identité de fichier cross-OS (dev/ino ; volume serial + file index + link count sur Windows) — v2 `platform.rs` ✅ | `winapi-util` (déjà transitif via `same-file`, dep cible `cfg(windows)`) |
 | `canonicalize` sans préfixe `\\?\` sur Windows — v2 `platform.rs` ✅ | `dunce` (dep cible `cfg(windows)`) |

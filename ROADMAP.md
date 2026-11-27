@@ -117,21 +117,24 @@ retirés. Le confinement noyau passe désormais par le backend par spawn
   `platform.rs`, branchements `resolve.rs`/`trusted.rs`, tests) — aucun
   changement de sémantique ; commentaires/noms de tests ajustés ; docs
   (`spec/platform.md`, `spec/platforms.md`, `spec/structure.md`) à jour.
-- 🚧 **Backend de confinement OS par spawn — crate `nono`** — plan d'impl :
-  `spec/sandbox-backend.md` (décisions 2026-11-24 + 2026-11-27). Scope v2 (une
-  PR) : `src/sandbox_backend.rs` (unique module `nono::`, dep épinglée `=`
-  + auditée avant bump), helper arg0 `__sandbox_helper <profil.json> -- <cmd…>`
-  + profil depuis `trusted.toml` + `Limits`, sandbox **FS + exec par spawn**
-  (landlock Linux ≥ 5.13 / seatbelt macOS / WSL2), réseau **`none` (défaut) /
-  `loopback`** via nono ; timeout + kill du groupe inchangés (`platform.rs`).
-  **Reporté à une v3 (décision 2026-11-27 : l'agent est borné par son nombre de
-  tours max)** : `network = "proxy"` (allowlist de domaines +
-  anti-DNS-rebinding), `mem_bytes`, `max_write_bytes`, `cpus` (rlimits `nix` /
-  cgroups — non couvert par nono hors cgroups Linux), lanceur WSL2 (`wsl.exe` ;
-  Windows natif fail-closed) — ces limites restent parsées dans
-  `trusted.toml` mais **refusées `denied` fail-closed** tant qu'elles ne sont
-  pas livrées. La cage userns+chroot du mode serveur est supprimée (décision 1).
-  (cf. `spec/sandbox-backend.md`, `spec/platforms.md` §3, `spec/security.md`).
+- ✅ **Backend de confinement OS par spawn — crate `nono`** (cette PR) —
+  livré selon `spec/sandbox-backend.md` (décisions 2026-11-24 + 2026-11-27) :
+  dep `nono = "=0.79.0"` épinglée (cible macos/linux, `default-features =
+  false`), `src/sandbox_backend.rs` (unique module `nono::`), helper arg0
+  `__sandbox_helper <profil.json> -- <cmd…>` (re-exec de notre binaire, profil
+  JSON strict depuis `trusted.toml` + `Limits`, sandbox appliqué juste avant
+  exec, exit code dédié 125 → `denied` fail-closed côté parent), spawn des
+  commandes trusted via le helper : sandbox **FS + exec par spawn** (landlock
+  Linux ≥ 5.13 / seatbelt macOS), réseau **`none` (défaut)** via nono ;
+  timeout + kill du groupe inchangés (`platform.rs`). Écart documenté
+  (`spec/sandbox-backend.md` §8) : les règles réseau Landlock sont par port
+  sans IP, donc `loopback` est **refusé `denied` sur Linux** et marche sur
+  macOS (Seatbelt `localhost:*`). **Reporté à une v3 (décision 2026-11-27)** :
+  `network = "proxy"`, `mem_bytes`, `max_write_bytes`, `cpus`, lanceur WSL2 —
+  parsés dans `trusted.toml` mais **refusés `denied` fail-closed** tant qu'ils
+  ne sont pas livrés. La cage userns+chroot du mode serveur est supprimée
+  (décision 1). (cf. `spec/sandbox-backend.md`, `spec/platforms.md` §3,
+  `spec/security.md`).
 - 🚧 **Commandes `git` en whitelist** : read-only d'abord (`status`/`diff`/`log`/
   `show`/`branch`/`rev-parse`, in-process via `git2`) ; mutations (`add`,
   `commit`, `push`…) restent `trusted` (cf. `spec/commands.md`).

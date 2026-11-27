@@ -25,6 +25,16 @@ wax = "0.7"
 [dev-dependencies]
 proptest = "1"
 
+# OS confinement backend by spawn (spec/sandbox-backend.md): the ONLY module
+# referencing `nono` is src/sandbox_backend.rs, so a breaking change of the
+# pre-1.0 crate touches a single file. Pinned to an exact version, Cargo.lock
+# committed, audited (cargo deny + cargo audit) before every bump.
+# macOS/Linux only — Windows native stays fail-closed (no backend there).
+# default-features = false: no system keyring (the console must never touch
+# the host keystore).
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+nono = { version = "=0.79.0", default-features = false }
+
 # OS abstraction layer (spec/platform.md): only used by the cfg(windows) code.
 # winapi-util (already transitive via same-file) reads volume serial + file
 # index + link count via GetFileInformationByHandle — same-file 1.x only

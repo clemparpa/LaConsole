@@ -11,6 +11,9 @@ allow = [
     "Unicode-3.0",
     "Unlicense",
     "Zlib",
+    # Mozilla root-certificate data (webpki-root-certs), pulled transitively
+    # by the `nono` dependency (sigstore -> reqwest 0.13 -> hyper-rustls).
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 
